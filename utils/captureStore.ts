@@ -10,7 +10,14 @@ import type {
   PageMessage,
   TweetData,
 } from './types';
-import { collectTweets, focalIdFromUrl, ingestTweetDetail, parseTweetResult } from './xParser';
+import {
+  collectTweets,
+  findBottomCursor,
+  findUserId,
+  focalIdFromUrl,
+  ingestTweetDetail,
+  parseTweetResult,
+} from './xParser';
 
 export interface FetchResult {
   ok: boolean;
@@ -134,21 +141,52 @@ function ingestCapture(op: string, url: string, json: unknown): void {
     const t = parseTweetResult((json as any)?.data?.tweetResult?.result);
     if (t?.id) getOrCreate(t.id).main = t;
   } else if (op === 'UserTweets') {
-    // Accumulate the author's posts so profile summaries get the full set X
-    // loaded (and more as the user scrolls), keyed by handle.
-    for (const t of collectTweets(json, 80)) {
-      if (!t.handle || !t.id) continue;
-      const key = t.handle.toLowerCase();
-      const arr = profilePosts.get(key) ?? [];
-      if (!arr.some((x) => x.id === t.id)) arr.push(t);
-      profilePosts.set(key, arr);
-    }
+    addProfilePosts(collectTweets(json, 80));
+  }
+}
+
+/** Dedupe posts into the per-handle store. */
+function addProfilePosts(tweets: TweetData[]): void {
+  for (const t of tweets) {
+    if (!t.handle || !t.id) continue;
+    const key = t.handle.toLowerCase();
+    const arr = profilePosts.get(key) ?? [];
+    if (!arr.some((x) => x.id === t.id)) arr.push(t);
+    profilePosts.set(key, arr);
   }
 }
 
 /** Posts captured for a given handle (from the user's profile browsing). */
 export function getProfilePosts(handle: string): TweetData[] {
   return profilePosts.get(handle.toLowerCase()) ?? [];
+}
+
+/**
+ * Actively fetch more of a user's posts by replaying UserByScreenName +
+ * paginating UserTweets (session-replay; ToS-sensitive — caller gates this).
+ * Accumulates into the per-handle store. Returns how many posts we now have.
+ */
+export async function fetchProfilePosts(
+  handle: string,
+  maxPages = 3,
+  onProgress?: (count: number) => void,
+): Promise<number> {
+  const user = await runOp('UserByScreenName', { screen_name: handle.replace(/^@/, '') });
+  if (!user.ok) return getProfilePosts(handle).length;
+  const userId = findUserId(user.json);
+  if (!userId) return getProfilePosts(handle).length;
+
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages; page++) {
+    const res = await runOp('UserTweets', { userId, count: 40, cursor });
+    if (!res.ok) break;
+    addProfilePosts(collectTweets(res.json, 80));
+    onProgress?.(getProfilePosts(handle).length);
+    const next = findBottomCursor(res.json);
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return getProfilePosts(handle).length;
 }
 
 export function getConversation(tweetId: string): Conversation | undefined {

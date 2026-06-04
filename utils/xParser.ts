@@ -133,6 +133,25 @@ export function collectTweets(json: unknown, limit = 25): TweetData[] {
   return out.slice(0, limit);
 }
 
+/** Find the bottom (next-page) cursor anywhere in a timeline response. */
+export function findBottomCursor(json: unknown): string | null {
+  let found: string | null = null;
+  const visit = (node: any): void => {
+    if (found || !node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const i of node) visit(i);
+      return;
+    }
+    if (node.cursorType === 'Bottom' && typeof node.value === 'string') {
+      found = node.value;
+      return;
+    }
+    for (const k of Object.keys(node)) visit(node[k]);
+  };
+  visit(json);
+  return found;
+}
+
 /** Pull a user's numeric id (rest_id) out of a UserByScreenName response. */
 export function findUserId(json: unknown): string | null {
   const direct = (json as any)?.data?.user?.result?.rest_id;

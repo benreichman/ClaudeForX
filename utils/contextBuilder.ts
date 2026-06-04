@@ -5,6 +5,7 @@ import {
   clearTemplate,
   ensureReplies,
   fetchDetail,
+  fetchProfilePosts,
   findTweet,
   getConversation,
   getProfilePosts,
@@ -113,8 +114,19 @@ async function gatherImages(main: TweetData): Promise<ApiImageBlock[]> {
   }
 }
 
-/** Scrape a profile page (bio + visible posts) for a "who is this?" read. */
-export function gatherProfileContext(handle: string): string {
+/** Gather a profile (bio + posts) for a "who is this?" read. When X tools are
+ * enabled, actively paginate the user's posts; otherwise use what was captured
+ * passively + the visible DOM. */
+export async function gatherProfileContext(
+  handle: string,
+  onProgress?: (status: string) => void,
+): Promise<string> {
+  const settings = await getSettings();
+  if (settings.xTools) {
+    onProgress?.(`Loading @${handle}'s posts…`);
+    await fetchProfilePosts(handle, 3, (n) => onProgress?.(`Loading posts… (${n})`));
+  }
+
   const nameEl = document.querySelector('[data-testid="UserName"]') as HTMLElement | null;
   const bioEl = document.querySelector('[data-testid="UserDescription"]') as HTMLElement | null;
   const name = (nameEl?.innerText ?? `@${handle}`).split('\n').filter(Boolean).join(' ');

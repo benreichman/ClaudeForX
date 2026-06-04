@@ -353,7 +353,7 @@ export default function App() {
 
   /** Start a fresh "who is this?" conversation for a profile. */
   const startProfileRun = useCallback(
-    (handle: string) => {
+    async (handle: string) => {
       disconnectPort();
       beginSession('general');
       setTurns([]);
@@ -361,7 +361,7 @@ export default function App() {
       setNotice(null);
       setBusy(true);
       setStatus('Reading the profile…');
-      const ctx = gatherProfileContext(handle);
+      const ctx = await gatherProfileContext(handle, setStatus);
       setMeta(`@${handle} · profile`);
       const first: Turn = {
         role: 'user',
@@ -414,7 +414,7 @@ export default function App() {
       setOpen(true);
       setRequest(req);
       if (req.kind === 'tweet') void startRun(actionRef.current, req);
-      else startProfileRun(req.handle);
+      else void startProfileRun(req.handle);
     });
   }, [startRun, startProfileRun]);
 
