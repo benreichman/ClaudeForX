@@ -82,6 +82,8 @@ export interface ChatMessage {
 export interface RunRequest {
   type: 'run';
   action: ActionId;
+  /** 'tweet' = focused on a specific post; 'general' = standalone chat. */
+  mode: 'tweet' | 'general';
   /** Full conversation so far. The first user message embeds the thread context. */
   messages: ChatMessage[];
 }

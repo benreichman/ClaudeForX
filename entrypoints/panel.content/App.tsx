@@ -14,6 +14,36 @@ import { LOGO_SVG } from './logo';
 
 type Port = ReturnType<typeof browser.runtime.connect>;
 
+/** Suggested starters shown in the general (no-tweet) empty state. */
+const GENERAL_PROMPTS = [
+  "What's in the news today?",
+  "What's trending in tech right now?",
+  'Explain a topic that’s blowing up online',
+];
+
+/**
+ * Where to place the minimized launcher so it sits *above* X's own bottom-right
+ * floating buttons (its Grok FAB) instead of overlapping them. Returns a `bottom`
+ * offset in px. Falls back to the corner when X has no floating button.
+ */
+function computeLauncherBottom(): number {
+  const margin = 20;
+  const gap = 14;
+  let topMost: number | null = null;
+  // X's floating Grok button carries a "Grok" aria-label and lives in the
+  // bottom-right corner. Per-tweet Grok buttons match too but sit mid-page,
+  // so the corner filter excludes them.
+  for (const el of document.querySelectorAll('[aria-label*="Grok" i]')) {
+    const r = (el as HTMLElement).getBoundingClientRect();
+    if (!r.width || !r.height || r.height > 110) continue;
+    const inCorner =
+      r.right > window.innerWidth - 150 && r.bottom > window.innerHeight - 220;
+    if (inCorner) topMost = topMost === null ? r.top : Math.min(topMost, r.top);
+  }
+  if (topMost === null) return margin;
+  return Math.max(margin, Math.round(window.innerHeight - topMost + gap));
+}
+
 /** A chat turn: `content` is what goes to the API, `display` what we render.
  * They differ only for the first user turn, whose content embeds the whole
  * captured thread but displays as just the action label. */
@@ -22,14 +52,6 @@ interface Turn extends ChatMessage {
   display: string;
   /** Images attached to this turn (only the first user turn carries them). */
   images?: ApiImageBlock[];
-}
-
-function bodyIsDark(): boolean {
-  const m = getComputedStyle(document.body)
-    .backgroundColor.match(/(\d+),\s*(\d+),\s*(\d+)/);
-  if (!m) return false;
-  const [r, g, b] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  return 0.299 * r + 0.587 * g + 0.114 * b < 128;
 }
 
 export default function App() {
@@ -42,7 +64,13 @@ export default function App() {
   const [meta, setMeta] = useState('');
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState('');
-  const [dark, setDark] = useState(false);
+  // Panel expanded vs. minimized to the launcher bubble. Closed by default, so
+  // the launcher is present on every X page (always-on mode).
+  const [open, setOpen] = useState(false);
+  const [launcherBottom, setLauncherBottom] = useState(20);
+
+  // No `request` = general (no-tweet) chat mode.
+  const general = request === null;
 
   const portRef = useRef<Port | null>(null);
   const actionRef = useRef<ActionId>('explain');
@@ -67,8 +95,17 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns, status]);
 
+  // While minimized, keep the launcher clear of X's bottom-right buttons.
+  useEffect(() => {
+    if (open) return;
+    const measure = () => setLauncherBottom(computeLauncherBottom());
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open]);
+
   /** Stream a completion for `messages`, appending into a fresh assistant turn. */
-  const stream = useCallback((act: ActionId, messages: Turn[]) => {
+  const stream = useCallback((act: ActionId, messages: Turn[], mode: 'tweet' | 'general') => {
     disconnectPort();
     setError(null);
     setBusy(true);
@@ -119,7 +156,7 @@ export default function App() {
       }
       return { role: t.role, content: t.content };
     });
-    const runMsg: RunRequest = { type: 'run', action: act, messages: apiMessages };
+    const runMsg: RunRequest = { type: 'run', action: act, mode, messages: apiMessages };
     port.postMessage(runMsg);
   }, [disconnectPort]);
 
@@ -153,26 +190,29 @@ export default function App() {
         display: ACTIONS[act].label,
         images: ctx.images,
       };
-      stream(act, [first]);
+      stream(act, [first], 'tweet');
     },
     [stream, disconnectPort],
   );
 
   useEffect(() => {
     return panelBus.onOpen((req) => {
-      setDark(bodyIsDark());
+      setOpen(true);
       setRequest(req);
       void startRun(actionRef.current, req);
     });
   }, [startRun]);
 
-  if (!request) return null;
-
+  // Fully reset to a general, empty chat and minimize.
   const close = () => {
     disconnectPort();
     setRequest(null);
     setTurns([]);
+    setNotice(null);
+    setMeta('');
+    setError(null);
     setBusy(false);
+    setOpen(false);
   };
 
   const openOptions = () => {
@@ -185,53 +225,106 @@ export default function App() {
 
   const onActionChange = (value: ActionId) => {
     setAction(value);
-    void startRun(value, request);
+    if (request) void startRun(value, request);
   };
 
-  const sendFollowUp = () => {
-    const text = input.trim();
+  /** Append a user message and stream a reply (works in both modes). */
+  const sendText = (raw: string) => {
+    const text = raw.trim();
     if (!text || busy) return;
     setInput('');
     // Drop any empty assistant turn left behind by an errored run.
     const history = turns.filter((t) => !(t.role === 'assistant' && !t.content));
-    stream(action, [...history, { role: 'user', content: text, display: text }]);
+    stream(action, [...history, { role: 'user', content: text, display: text }], request ? 'tweet' : 'general');
   };
 
   const retry = () => {
     const history = turns.filter((t) => !(t.role === 'assistant' && !t.content));
-    if (history.length) stream(action, history);
-    else void startRun(action, request);
+    if (history.length) stream(action, history, request ? 'tweet' : 'general');
+    else if (request) void startRun(action, request);
   };
 
+  const lastIsStreamingAssistant =
+    busy &&
+    !status &&
+    turns.length > 0 &&
+    turns[turns.length - 1].role === 'assistant';
+
+  // Minimized: just a floating launcher bubble in the corner (always present).
+  if (!open) {
+    return (
+      <div className="cgx-root">
+        <button
+          className={`cgx-launcher${busy ? ' busy' : ''}`}
+          style={{ bottom: `${launcherBottom}px` }}
+          title="Ask Claude"
+          onClick={() => setOpen(true)}
+          dangerouslySetInnerHTML={{ __html: LOGO_SVG }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className={`cgx-root${dark ? ' dark' : ''}`}>
+    <div className="cgx-root">
       <div className="cgx-panel">
         <header className="cgx-header">
-          <span
-            className="cgx-logo"
-            dangerouslySetInnerHTML={{ __html: LOGO_SVG }}
-          />
-          <span className="cgx-title">Claude</span>
-          <select
-            className="cgx-select"
-            value={action}
-            onChange={(e) => onActionChange(e.target.value as ActionId)}
-          >
-            {(Object.keys(ACTIONS) as ActionId[]).map((id) => (
-              <option key={id} value={id}>
-                {ACTIONS[id].label}
-              </option>
-            ))}
-          </select>
-          <button className="cgx-iconbtn" title="Settings" onClick={openOptions}>
-            ⚙
-          </button>
-          <button className="cgx-iconbtn" title="Close" onClick={close}>
-            ✕
-          </button>
+          <div className="cgx-brand">
+            <span className="cgx-logo" dangerouslySetInnerHTML={{ __html: LOGO_SVG }} />
+            <span className="cgx-title">Claude</span>
+          </div>
+          <div className="cgx-tools">
+            {!general && (
+              <div className="cgx-select-wrap">
+                <select
+                  className="cgx-select"
+                  value={action}
+                  onChange={(e) => onActionChange(e.target.value as ActionId)}
+                >
+                  {(Object.keys(ACTIONS) as ActionId[]).map((id) => (
+                    <option key={id} value={id}>
+                      {ACTIONS[id].label}
+                    </option>
+                  ))}
+                </select>
+                <span className="cgx-caret" aria-hidden>
+                  ▾
+                </span>
+              </div>
+            )}
+            <button className="cgx-iconbtn" title="Settings" onClick={openOptions}>
+              ⚙
+            </button>
+            <button className="cgx-iconbtn" title="Minimize" onClick={() => setOpen(false)}>
+              –
+            </button>
+            <button className="cgx-iconbtn" title="Close" onClick={close}>
+              ✕
+            </button>
+          </div>
         </header>
 
         <div className="cgx-body" ref={bodyRef}>
+          {general && turns.length === 0 && !busy && !error && (
+            <div className="cgx-empty">
+              <span
+                className="cgx-empty-logo"
+                dangerouslySetInnerHTML={{ __html: LOGO_SVG }}
+              />
+              <p className="cgx-empty-title">Ask Claude anything</p>
+              <p className="cgx-empty-sub">
+                Current events, trends, or general questions. For a specific post, click
+                the Claude button on any tweet.
+              </p>
+              <div className="cgx-chips">
+                {GENERAL_PROMPTS.map((p) => (
+                  <button key={p} className="cgx-chip" onClick={() => sendText(p)}>
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {notice && <div className="cgx-notice">{notice}</div>}
           {turns.map((t, i) =>
             t.role === 'user' ? (
@@ -239,14 +332,24 @@ export default function App() {
                 {t.display}
               </div>
             ) : (
-              <div
-                key={i}
-                className="cgx-output"
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(t.display) }}
-              />
+              <div key={i} className="cgx-output">
+                <span dangerouslySetInnerHTML={{ __html: renderMarkdown(t.display) }} />
+                {lastIsStreamingAssistant && i === turns.length - 1 && (
+                  <span className="cgx-cursor" />
+                )}
+              </div>
             ),
           )}
-          {status && <div className="cgx-status">{status}</div>}
+          {status && (
+            <div className="cgx-status">
+              <span className="cgx-dots">
+                <i />
+                <i />
+                <i />
+              </span>
+              {status}
+            </div>
+          )}
           {error && (
             <div className="cgx-error">
               <p>{error}</p>
@@ -259,18 +362,24 @@ export default function App() {
         </div>
 
         <footer className="cgx-footer">
-          {meta && <div className="cgx-meta">Context: {meta}</div>}
+          {meta && <div className="cgx-meta">{meta}</div>}
           <form
             className="cgx-inputrow"
             onSubmit={(e) => {
               e.preventDefault();
-              sendFollowUp();
+              sendText(input);
             }}
           >
             <input
               ref={inputRef}
               type="text"
-              placeholder={busy ? 'Claude is responding…' : 'Ask a follow-up…'}
+              placeholder={
+                busy
+                  ? 'Claude is responding…'
+                  : general
+                    ? 'Ask Claude anything…'
+                    : 'Ask a follow-up…'
+              }
               value={input}
               disabled={busy}
               onChange={(e) => setInput(e.target.value)}

@@ -3,7 +3,7 @@
 // Requests run here because host_permissions exempt the worker from CORS.
 
 import { refreshTokens } from '@/utils/oauth';
-import { ACTIONS, CLAUDE_CODE_SYSTEM, MAIN_SYSTEM } from '@/utils/prompts';
+import { CLAUDE_CODE_SYSTEM, GENERAL_SYSTEM, MAIN_SYSTEM } from '@/utils/prompts';
 import { getSettings } from '@/utils/settings';
 import type {
   ApiImageBlock,
@@ -62,13 +62,12 @@ function send(port: Port, msg: StreamMessage): void {
 
 async function run(port: Port, msg: RunRequest, signal: AbortSignal): Promise<void> {
   const settings = await getSettings();
-  const action = ACTIONS[msg.action] ?? ACTIONS.explain;
 
   const system: { type: 'text'; text: string }[] = [];
   if (settings.authMode === 'oauth') {
     system.push({ type: 'text', text: CLAUDE_CODE_SYSTEM });
   }
-  system.push({ type: 'text', text: MAIN_SYSTEM });
+  system.push({ type: 'text', text: msg.mode === 'general' ? GENERAL_SYSTEM : MAIN_SYSTEM });
 
   const body: Record<string, unknown> = {
     model: settings.model,
@@ -77,8 +76,10 @@ async function run(port: Port, msg: RunRequest, signal: AbortSignal): Promise<vo
     system,
     messages: msg.messages,
   };
-  if (action.webSearch && settings.webSearch) {
-    body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }];
+  // Native server-side web search — available on every action when enabled.
+  // Claude decides when to actually search; fact-check leans on it most.
+  if (settings.webSearch) {
+    body.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
   }
 
   let res = await callApi(settings, body, signal, false);
