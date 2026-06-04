@@ -101,7 +101,9 @@ export default function App() {
   // Panel expanded vs. minimized to the launcher bubble. Closed by default, so
   // the launcher is present on every X page (always-on mode).
   const [open, setOpen] = useState(false);
-  const [launcherBottom, setLauncherBottom] = useState(20);
+  // null until we've located X's Grok FAB — the launcher stays hidden until then
+  // so it never flashes at the wrong spot.
+  const [launcherBottom, setLauncherBottom] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
 
@@ -166,28 +168,45 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns, status]);
 
-  // While minimized, keep the launcher clear of X's bottom-right buttons.
-  // X's Grok FAB renders after page load, so poll until it appears, then stop.
+  // While minimized, position the launcher above X's bottom-right Grok FAB.
+  // That FAB renders + animates in after page load, so poll quickly and wait
+  // for a STABLE reading (same value twice) before showing — this avoids the
+  // flash at the default corner and the mid-animation jump.
   useEffect(() => {
     if (open) return;
-    const apply = (): boolean => {
+    const STEP = 100;
+    let last: number | null = null;
+    let stable = 0;
+    let elapsed = 0;
+    const poll = setInterval(() => {
+      elapsed += STEP;
       const b = computeLauncherBottom();
       if (b != null) {
-        setLauncherBottom(b);
-        return true;
+        if (b === last) stable += 1;
+        else {
+          last = b;
+          stable = 0;
+        }
+        if (stable >= 1) {
+          setLauncherBottom(b); // settled
+          clearInterval(poll);
+          return;
+        }
       }
-      return false;
+      if (elapsed >= 2500) {
+        // No (stable) FAB found — fall back so the launcher still appears.
+        setLauncherBottom((prev) => prev ?? b ?? 20);
+        clearInterval(poll);
+      }
+    }, STEP);
+    const onResize = () => {
+      const b = computeLauncherBottom();
+      if (b != null) setLauncherBottom(b);
     };
-    apply();
-    const poll = setInterval(() => {
-      if (apply()) clearInterval(poll);
-    }, 400);
-    const stop = setTimeout(() => clearInterval(poll), 12_000);
-    window.addEventListener('resize', apply);
+    window.addEventListener('resize', onResize);
     return () => {
       clearInterval(poll);
-      clearTimeout(stop);
-      window.removeEventListener('resize', apply);
+      window.removeEventListener('resize', onResize);
     };
   }, [open]);
 
@@ -424,8 +443,10 @@ export default function App() {
     turns.length > 0 &&
     turns[turns.length - 1].role === 'assistant';
 
-  // Minimized: just a floating launcher bubble in the corner (always present).
+  // Minimized: a floating launcher bubble — hidden until we've positioned it
+  // above X's Grok FAB, so it never flashes at the default corner first.
   if (!open) {
+    if (launcherBottom == null) return null;
     return (
       <div className="cgx-root">
         <button
