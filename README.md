@@ -2,7 +2,20 @@
 
 Like Grok, but Claude. A Chrome extension (Manifest V3) that puts Claude on X/Twitter: a button on every post to explain / summarize / fact-check it, **and** an always-on launcher for a general Claude chat — with web search, image understanding, and (optionally) the ability to search X itself using your live session.
 
-> ⚠️ **Personal, unofficial project.** It uses undocumented internals of X and (optionally) the Claude Code OAuth flow. Read the [risks](#honest-caveats--risks) before using or distributing it.
+> ⚠️ **Personal, unofficial project.** It uses undocumented internals of X and (optionally) the Claude Code OAuth flow. Read the [Disclaimer](#disclaimer) and [risks](#honest-caveats--risks) before using or distributing it.
+
+## Disclaimer
+
+**This is an independent, unofficial project provided "AS IS", with no warranty of any kind. Use it entirely at your own risk.** See the [LICENSE](./LICENSE) for the full warranty disclaimer and limitation of liability.
+
+- **No affiliation.** This project is **not affiliated with, endorsed by, sponsored by, or connected to** Anthropic, X Corp., or any of their products or services. "Claude" is a trademark of Anthropic; "X", "Twitter", and "Grok" are trademarks of X Corp. All trademarks belong to their respective owners and are used here only nominatively/descriptively to identify those services.
+- **You assume all risk.** By installing or using this software you accept full responsibility for how you use it and for any consequences, including (without limitation): violating Anthropic's or X's Terms of Service or automation rules; suspension, rate-limiting, or termination of your accounts; data loss; and any API or subscription charges you incur.
+- **No liability.** To the maximum extent permitted by law, the authors and contributors are **not liable** for any damages, losses, costs, account actions, or other harm arising from the use of (or inability to use) this software, including any output produced by Claude or any third-party model.
+- **Unofficial integrations.** The Claude subscription (OAuth) path and the "Search X" features rely on undocumented behavior and may violate the respective platforms' terms. They are **off by default** where applicable and provided for personal experimentation. **You are solely responsible for your own compliance** with all applicable terms, laws, and the rights of others.
+- **You own your credentials and costs.** You supply your own API key or account; those credentials stay in your browser, and any usage/charges are yours.
+- **AI output is not advice.** Responses may be inaccurate, incomplete, or fabricated. Do not rely on them for factual, legal, financial, medical, or other consequential decisions without independent verification.
+
+*This disclaimer is not legal advice.*
 
 ## Features
 
@@ -73,7 +86,11 @@ The `x-client-transaction-id` implementation is ported from these reverse-engine
 
 ## Roadmap
 
-- A dedicated citations/sources panel for search results
 - An "X tools status" indicator in settings (which operations are armed)
 - "Open in Claude" handoff
 - Video understanding (frame sampling)
+
+## License
+
+[MIT](./LICENSE) — provided "AS IS" with no warranty or liability. See the
+[Disclaimer](#disclaimer) above for affiliation, trademark, and risk notes.

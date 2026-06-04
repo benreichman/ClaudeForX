@@ -55,8 +55,9 @@ const GENERAL_PROMPTS = [
  * floating buttons (its Grok FAB) instead of overlapping them. Returns a `bottom`
  * offset in px. Falls back to the corner when X has no floating button.
  */
-function computeLauncherBottom(): number {
-  const margin = 20;
+// Returns the `bottom` offset to clear X's Grok FAB, or null if that button
+// isn't in the DOM yet (X's SPA renders it after load — caller should retry).
+function computeLauncherBottom(): number | null {
   const gap = 14;
   let topMost: number | null = null;
   // X's floating Grok button carries a "Grok" aria-label and lives in the
@@ -69,8 +70,8 @@ function computeLauncherBottom(): number {
       r.right > window.innerWidth - 150 && r.bottom > window.innerHeight - 220;
     if (inCorner) topMost = topMost === null ? r.top : Math.min(topMost, r.top);
   }
-  if (topMost === null) return margin;
-  return Math.max(margin, Math.round(window.innerHeight - topMost + gap));
+  if (topMost === null) return null;
+  return Math.max(20, Math.round(window.innerHeight - topMost + gap));
 }
 
 /** A chat turn: `content` is what goes to the API, `display` what we render.
@@ -166,12 +167,28 @@ export default function App() {
   }, [turns, status]);
 
   // While minimized, keep the launcher clear of X's bottom-right buttons.
+  // X's Grok FAB renders after page load, so poll until it appears, then stop.
   useEffect(() => {
     if (open) return;
-    const measure = () => setLauncherBottom(computeLauncherBottom());
-    measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    const apply = (): boolean => {
+      const b = computeLauncherBottom();
+      if (b != null) {
+        setLauncherBottom(b);
+        return true;
+      }
+      return false;
+    };
+    apply();
+    const poll = setInterval(() => {
+      if (apply()) clearInterval(poll);
+    }, 400);
+    const stop = setTimeout(() => clearInterval(poll), 12_000);
+    window.addEventListener('resize', apply);
+    return () => {
+      clearInterval(poll);
+      clearTimeout(stop);
+      window.removeEventListener('resize', apply);
+    };
   }, [open]);
 
   /** Stream a completion for `messages`, appending into a fresh assistant turn. */
