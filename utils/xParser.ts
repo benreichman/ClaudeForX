@@ -107,7 +107,7 @@ function addTweet(conv: Conversation, focalId: string, t: TweetData | null): voi
  * and parse every `tweet_results.result` we find, in document order, deduped by
  * id. Avoids depending on the exact instruction/entry path (which varies by op).
  */
-export function collectTweets(json: unknown, limit = 25): TweetData[] {
+export function collectTweets(json: unknown, limit = 25, skipPromoted = false): TweetData[] {
   const out: TweetData[] = [];
   const seen = new Set<string>();
   const visit = (node: any): void => {
@@ -116,6 +116,9 @@ export function collectTweets(json: unknown, limit = 25): TweetData[] {
       for (const item of node) visit(item);
       return;
     }
+    // On the home feed, promoted entries carry promotedMetadata alongside their
+    // tweet_results — skip the whole subtree so ads never enter the digest.
+    if (skipPromoted && node.promotedMetadata) return;
     if (node.tweet_results && typeof node.tweet_results === 'object') {
       const t = parseTweetResult(node.tweet_results.result);
       if (t?.id && !seen.has(t.id)) {

@@ -460,6 +460,27 @@ export default function App() {
             ))}
           </div>
         )}
+
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={settings.feedAccess}
+            onChange={(e) => update({ feedAccess: e.target.checked })}
+          />
+          <div>
+            <strong>Catch me up on my feed (experimental)</strong>
+            <p>
+              Enables the “Catch me up” button in the chat — a one-click digest of your
+              home feed, a person, or a topic, read live from your logged-in X session.{' '}
+              <em>
+                Unofficial &amp; off by default: this reads X's internal timeline API on
+                your behalf, which is against X's automation rules and can hit rate limits
+                or flag your account. Read-only, but use at your own risk.
+              </em>{' '}
+              Open your X home feed once to prime it.
+            </p>
+          </div>
+        </label>
       </section>
     </main>
   );

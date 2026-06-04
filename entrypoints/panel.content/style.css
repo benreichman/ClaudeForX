@@ -416,6 +416,137 @@
   background: #1d1d1d;
 }
 
+/* ---- "Catch me up" hero card (general/home empty state) ---- */
+
+.cgx-catchup-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  margin: 0 auto 20px;
+  max-width: 320px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-elevated);
+}
+
+/* segmented scope control: Feed · Person · Topic */
+.cgx-scope {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 9999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.cgx-scope-seg {
+  flex: 1;
+  padding: 6px 0;
+  border: none;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.cgx-scope-seg:hover {
+  color: var(--fg);
+}
+
+.cgx-scope-seg.active {
+  background: rgba(255, 62, 0, 0.14);
+  color: var(--accent);
+}
+
+.cgx-catchup-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  outline: none;
+}
+
+.cgx-catchup-input:focus {
+  border-color: var(--accent);
+}
+
+.cgx-catchup-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.cgx-catchup-cta:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.cgx-catchup-cta:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cgx-catchup-glyph {
+  display: inline-flex;
+}
+
+.cgx-catchup-glyph svg {
+  width: 15px;
+  height: 15px;
+}
+
+.cgx-catchup-hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-align: center;
+}
+
+.cgx-catchup-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cgx-catchup-gate p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: left;
+}
+
+.cgx-catchup-or {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
 .cgx-notice {
   align-self: stretch;
   background: rgba(255, 62, 0, 0.1);

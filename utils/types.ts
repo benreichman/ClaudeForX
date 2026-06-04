@@ -36,6 +36,9 @@ export interface GqlTemplate {
   features: string | null;
   fieldToggles: string | null;
   variables: Record<string, unknown>;
+  /** HTTP method X uses for this op. GET (variables in query) is the default;
+   * some ops (e.g. HomeTimeline) are POST with variables/features in the body. */
+  method?: 'GET' | 'POST';
 }
 /** @deprecated alias — kept so existing imports compile. */
 export type DetailTemplate = GqlTemplate;
@@ -226,5 +229,7 @@ export interface Settings {
   sendImages: boolean;
   /** Let Claude search X / fetch posts via the user's session (off by default). */
   xTools: boolean;
+  /** Allow "Catch me up" to read your home feed via your session (off by default). */
+  feedAccess: boolean;
   oauth: OAuthTokens | null;
 }

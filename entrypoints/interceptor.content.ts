@@ -67,7 +67,11 @@ export default defineContentScript({
       if (headers?.authorization) lastAuthHeaders = headers;
     }
 
-    function captureTemplate(url: string, headers: Record<string, string>): void {
+    function captureTemplate(
+      url: string,
+      headers: Record<string, string>,
+      init?: RequestInit,
+    ): void {
       try {
         const u = new URL(url, location.origin);
         const m = u.pathname.match(/\/graphql\/([^/]+)\/([^/?]+)/);
@@ -75,20 +79,46 @@ export default defineContentScript({
         const queryId = m[1];
         const op = m[2];
         if (headers.authorization) opHeaders[op] = headers;
-        const changed = templates[op]?.queryId !== queryId;
-        const template: GqlTemplate = {
-          queryId,
-          operationName: op,
-          features: u.searchParams.get('features'),
-          fieldToggles: u.searchParams.get('fieldToggles'),
-          variables: JSON.parse(u.searchParams.get('variables') ?? '{}'),
-        };
+        const method = (init?.method ?? 'GET').toUpperCase() === 'POST' ? 'POST' : 'GET';
+
+        // GET ops carry variables/features in the URL query; POST ops (e.g.
+        // HomeTimeline) carry them in the JSON body. Read from the right place.
+        let template: GqlTemplate;
+        if (method === 'POST') {
+          const bodyText = typeof init?.body === 'string' ? init.body : '';
+          const body = JSON.parse(bodyText || '{}') as {
+            variables?: Record<string, unknown>;
+            features?: unknown;
+            fieldToggles?: unknown;
+          };
+          if (!body.variables) return; // not a templated query body we can replay
+          template = {
+            queryId,
+            operationName: op,
+            features: body.features != null ? JSON.stringify(body.features) : null,
+            fieldToggles: body.fieldToggles != null ? JSON.stringify(body.fieldToggles) : null,
+            variables: body.variables,
+            method: 'POST',
+          };
+        } else {
+          template = {
+            queryId,
+            operationName: op,
+            features: u.searchParams.get('features'),
+            fieldToggles: u.searchParams.get('fieldToggles'),
+            variables: JSON.parse(u.searchParams.get('variables') ?? '{}'),
+            method: 'GET',
+          };
+        }
+
+        const changed =
+          templates[op]?.queryId !== queryId || templates[op]?.method !== template.method;
         templates[op] = template;
         // Only notify the content script when the queryId is new/rotated, to
         // avoid a storage write on every GraphQL call as the user scrolls.
         if (changed) emit({ source: 'cgx-page', type: 'gql-template', op, template });
       } catch {
-        // POST/persisted ops or unusual URLs — ignore.
+        // Unusual URLs / unparseable bodies — ignore.
       }
     }
 
@@ -111,9 +141,13 @@ export default defineContentScript({
       emit({ source: 'cgx-page', type: 'capture', op, url, json });
     }
 
-    function onGraphqlRequest(url: string, headers: Record<string, string>): void {
+    function onGraphqlRequest(
+      url: string,
+      headers: Record<string, string>,
+      init?: RequestInit,
+    ): void {
       noteAuth(headers);
-      captureTemplate(url, headers);
+      captureTemplate(url, headers, init);
     }
 
     // ---- fetch interception ----
@@ -128,7 +162,12 @@ export default defineContentScript({
       const promise = origFetch(input, init);
       if (url && GRAPHQL.test(url)) {
         const headers = collectFetchHeaders(input, init);
-        onGraphqlRequest(url, headers);
+        // For Request objects, the method/body live on `input`, not `init`.
+        const reqInit: RequestInit =
+          input instanceof Request
+            ? { method: input.method, body: (init?.body ?? undefined) as BodyInit | undefined }
+            : (init ?? {});
+        onGraphqlRequest(url, headers, reqInit);
         if (INTERESTING.test(url)) {
           promise
             .then((res) => {
@@ -167,6 +206,7 @@ export default defineContentScript({
     type CgxXhr = XMLHttpRequest & {
       __cgxUrl?: string;
       __cgxHeaders?: Record<string, string>;
+      __cgxMethod?: string;
     };
 
     const origOpen = XMLHttpRequest.prototype.open;
@@ -174,6 +214,7 @@ export default defineContentScript({
     const origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
 
     XMLHttpRequest.prototype.open = function (this: CgxXhr, ...args: unknown[]) {
+      this.__cgxMethod = String(args[0] ?? 'GET');
       this.__cgxUrl = String(args[1] ?? '');
       this.__cgxHeaders = {};
       // @ts-expect-error - passthrough of original arguments
@@ -189,7 +230,11 @@ export default defineContentScript({
     };
     XMLHttpRequest.prototype.send = function (this: CgxXhr, ...args: unknown[]) {
       if (this.__cgxUrl && GRAPHQL.test(this.__cgxUrl)) {
-        onGraphqlRequest(this.__cgxUrl, this.__cgxHeaders ?? {});
+        const body = typeof args[0] === 'string' ? (args[0] as string) : undefined;
+        onGraphqlRequest(this.__cgxUrl, this.__cgxHeaders ?? {}, {
+          method: this.__cgxMethod,
+          body,
+        });
         if (INTERESTING.test(this.__cgxUrl)) {
           this.addEventListener('load', () => {
             try {
@@ -289,16 +334,33 @@ export default defineContentScript({
       }
       try {
         const merged = { ...template.variables, ...overrides };
-        const url = buildOpUrl(template, merged);
+        const method = template.method === 'POST' ? 'POST' : 'GET';
+        const pathname = `/i/api/graphql/${template.queryId}/${template.operationName}`;
         const headers = { ...base };
         delete headers['content-length'];
         // ALWAYS mint a fresh token. X treats x-client-transaction-id as
         // single-use, so reusing a captured one fails on the 2nd request of a
         // turn. A freshly generated token is unique per call.
-        const gen = await generateTransactionId('GET', new URL(url).pathname);
+        const gen = await generateTransactionId(method, pathname);
         if (gen) headers['x-client-transaction-id'] = gen;
         else if (!own?.['x-client-transaction-id']) delete headers['x-client-transaction-id'];
-        const res = await origFetch(url, { headers, credentials: 'include' });
+
+        let res: Response;
+        if (method === 'POST') {
+          // POST ops (HomeTimeline): variables/features go in the JSON body.
+          headers['content-type'] = 'application/json';
+          const payload: Record<string, unknown> = { variables: merged, queryId: template.queryId };
+          if (template.features) payload.features = JSON.parse(template.features);
+          if (template.fieldToggles) payload.fieldToggles = JSON.parse(template.fieldToggles);
+          res = await origFetch(`${location.origin}${pathname}`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+            credentials: 'include',
+          });
+        } else {
+          res = await origFetch(buildOpUrl(template, merged), { headers, credentials: 'include' });
+        }
         const text = await res.text();
         let json: unknown;
         try {

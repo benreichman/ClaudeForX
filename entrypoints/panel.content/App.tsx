@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { gatherContext, gatherProfileContext } from '@/utils/contextBuilder';
+import {
+  gatherContext,
+  gatherFeedDigestContext,
+  gatherProfileContext,
+  type FeedScope,
+} from '@/utils/contextBuilder';
 import { renderMarkdown } from '@/utils/markdown';
 import { panelBus, type OpenRequest } from '@/utils/panelBus';
-import { ACTIONS } from '@/utils/prompts';
+import { ACTIONS, CATCH_ME_UP } from '@/utils/prompts';
+import { CatchUpCard } from './CatchUpCard';
 import { estimateCost, formatCost, formatTokens, priceFor } from '@/utils/pricing';
 import { MODELS, getSettings, saveSettings } from '@/utils/settings';
 import { executeTool } from '@/utils/xTools';
@@ -114,6 +120,7 @@ export default function App() {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [provider, setProvider] = useState<'anthropic' | 'openai'>('anthropic');
   const [authMode, setAuthMode] = useState<'oauth' | 'apikey'>('oauth');
+  const [feedAccess, setFeedAccess] = useState(false);
   const [model, setModel] = useState<string>('claude-sonnet-4-6');
   const [openaiModel, setOpenaiModel] = useState<string>('');
   const [openaiModels, setOpenaiModels] = useState<string[]>([]);
@@ -194,6 +201,7 @@ export default function App() {
     void getSettings().then((s) => {
       setProvider(s.provider);
       setAuthMode(s.authMode);
+      setFeedAccess(s.feedAccess ?? false);
       setModel(s.model);
       setOpenaiModel(s.openai?.model ?? '');
       setOpenaiModels(s.openai?.models ?? []);
@@ -433,6 +441,42 @@ export default function App() {
     },
     [stream, disconnectPort],
   );
+
+  /** Start a "Catch me up" digest of the feed / a person / a topic. */
+  const startCatchUp = useCallback(
+    async (scope: FeedScope, arg: string) => {
+      disconnectPort();
+      beginSession('general');
+      setRequest(null);
+      setTurns([]);
+      setError(null);
+      setNotice(null);
+      setMeta('');
+      setBusy(true);
+      setStatus('Reading…');
+      const ctx = await gatherFeedDigestContext(scope, arg, setStatus);
+      setMeta(`${ctx.count} posts · ${ctx.source}`);
+      const label =
+        scope === 'feed'
+          ? 'Catch me up'
+          : scope === 'person'
+            ? `Catch me up on @${arg.replace(/^@/, '')}`
+            : `Catch me up on “${arg}”`;
+      const first: Turn = {
+        role: 'user',
+        content: `${CATCH_ME_UP}\n\n${ctx.text}`,
+        display: label,
+      };
+      stream('explain', [first], 'general');
+    },
+    [stream, disconnectPort],
+  );
+
+  /** Enable the Feed access opt-in from the card's gate. */
+  const enableFeedAccess = async () => {
+    setFeedAccess(true);
+    await saveSettings({ feedAccess: true });
+  };
 
   /** Start a fresh conversation for a tweet with the given action. */
   const startRun = useCallback(
@@ -761,24 +805,13 @@ export default function App() {
 
         <div className="cgx-body" ref={bodyRef}>
           {general && turns.length === 0 && !busy && !error && (
-            <div className="cgx-empty">
-              <span
-                className="cgx-empty-logo"
-                dangerouslySetInnerHTML={{ __html: LOGO_SVG }}
-              />
-              <p className="cgx-empty-title">Ask Claude anything</p>
-              <p className="cgx-empty-sub">
-                Current events, trends, or general questions. For a specific post, click
-                the Claude button on any tweet.
-              </p>
-              <div className="cgx-chips">
-                {GENERAL_PROMPTS.map((p) => (
-                  <button key={p} className="cgx-chip" onClick={() => sendText(p)}>
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <CatchUpCard
+              enabled={feedAccess}
+              onCatchUp={(scope, arg) => void startCatchUp(scope, arg)}
+              onEnable={() => void enableFeedAccess()}
+              prompts={GENERAL_PROMPTS}
+              onAsk={sendText}
+            />
           )}
           {notice && <div className="cgx-notice">{notice}</div>}
           {turns.map((t, i) =>

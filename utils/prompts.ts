@@ -30,6 +30,19 @@ export const GENERAL_SYSTEM = `You are Claude, in a browser extension on X (form
 - Be direct and conversational. Short paragraphs, markdown sparingly.
 - If the user wants help with a specific post, tell them they can click the Claude button on any tweet for post-aware answers.`;
 
+/** Instruction for a "Catch me up" feed digest (general mode, first user turn). */
+export const CATCH_ME_UP = `Below is a batch of X posts fetched live from the user's session just now (the user did not paste them). Give them a fast, scannable digest of what's happening — the kind of thing that replaces scrolling.
+
+Format:
+- Open with ONE line capturing the overall vibe ("Mostly AI pricing drama and a market dip.").
+- Then group the posts into 3–6 themes. For each: a **bold short theme name**, one or two sentences on what's being said and the gist of the reaction, and 1–3 clickable post links as markdown — [@handle](url) — using the URLs given in angle brackets.
+- Close with a quick "**Worth your time:**" line (the one or two posts genuinely worth opening) and optionally a "**Skip:**" line.
+
+Rules:
+- Be direct and concise — this is a glance, not an essay. No preamble like "Here's your digest".
+- Only reference posts that are actually in the batch, and only link URLs that were provided. Never invent posts, handles, or links.
+- It's a sample in X's order, not everything — don't overstate. If a theme is thin, say so or drop it.`;
+
 export interface ActionDef {
   label: string;
   instruction: string;

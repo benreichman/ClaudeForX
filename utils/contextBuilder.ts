@@ -5,13 +5,16 @@ import {
   clearTemplate,
   ensureReplies,
   fetchDetail,
+  fetchHomeTimeline,
   fetchProfilePosts,
   findTweet,
   getConversation,
   getProfilePosts,
+  runOp,
 } from './captureStore';
 import { scrapeArticle, scrapeVisibleThread } from './domScraper';
 import { getSettings } from './settings';
+import { collectTweets } from './xParser';
 import type { ApiImageBlock, FetchImagesRequest, TweetData } from './types';
 
 const MAX_IMAGES = 4;
@@ -159,6 +162,81 @@ export async function gatherProfileContext(
   } else {
     parts.push('', '(No posts visible on the page — scroll the profile and try again.)');
   }
+  return parts.join('\n');
+}
+
+export type FeedScope = 'feed' | 'person' | 'topic';
+
+export interface FeedDigestContext {
+  text: string;
+  count: number;
+  /** Short human label for the source, shown in the panel meta line. */
+  source: string;
+}
+
+/**
+ * Gather posts for a "Catch me up" digest: the home feed, a person's posts, or
+ * a topic search — all via session replay. Returns compact text for Claude plus
+ * a count/source for the UI. Caller gates `feed` behind the Feed access opt-in.
+ */
+export async function gatherFeedDigestContext(
+  scope: FeedScope,
+  arg: string,
+  onProgress?: (status: string) => void,
+): Promise<FeedDigestContext> {
+  let posts: TweetData[] = [];
+  let source = 'your feed';
+
+  if (scope === 'feed') {
+    onProgress?.('Reading your feed…');
+    posts = await fetchHomeTimeline(5, 120, (n) => onProgress?.(`Found ${n} posts…`));
+  } else if (scope === 'person') {
+    const handle = arg.replace(/^@/, '').trim();
+    source = `@${handle}`;
+    onProgress?.(`Reading @${handle}'s posts…`);
+    await fetchProfilePosts(handle, 4, (n) => onProgress?.(`Found ${n} posts…`));
+    const lc = handle.toLowerCase();
+    posts = getProfilePosts(handle).filter((t) => t.handle.toLowerCase() === lc).slice(0, 120);
+  } else {
+    const query = arg.trim();
+    source = `"${query}"`;
+    onProgress?.(`Searching X for "${query}"…`);
+    const res = await runOp('SearchTimeline', {
+      rawQuery: query,
+      product: 'Top',
+      count: 40,
+      querySource: 'typed_query',
+      cursor: undefined,
+    });
+    posts = res.ok ? collectTweets(res.json, 120, true) : [];
+  }
+
+  onProgress?.('Summarizing…');
+  return { text: formatFeed(posts, scope, source), count: posts.length, source };
+}
+
+function formatFeed(posts: TweetData[], scope: FeedScope, source: string): string {
+  const header =
+    scope === 'feed'
+      ? 'HOME FEED'
+      : scope === 'person'
+        ? `RECENT POSTS FROM ${source}`
+        : `X SEARCH — ${source}`;
+  if (!posts.length) {
+    return `=== ${header} ===\n(No posts could be read. ${
+      scope === 'feed'
+        ? 'Open your X home feed once, then try again.'
+        : scope === 'person'
+          ? 'Visit any profile on X once to enable this, then try again.'
+          : 'Run a search on X once to enable this, then try again.'
+    })`;
+  }
+  const parts = [`=== ${header} (${posts.length} posts, fetched live just now) ===`];
+  posts.forEach((t, i) => {
+    const eng = t.likes != null ? ` [${fmtNum(t.likes)}♥]` : '';
+    const url = t.handle && t.id ? ` <https://x.com/${t.handle}/status/${t.id}>` : '';
+    parts.push(`${i + 1}. @${t.handle}${eng}: ${truncate(t.text.replace(/\s+/g, ' '), 400)}${url}`);
+  });
   return parts.join('\n');
 }
 

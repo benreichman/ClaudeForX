@@ -26,6 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
   activeFetch: true,
   sendImages: true,
   xTools: false,
+  feedAccess: false,
   oauth: null,
 };
 

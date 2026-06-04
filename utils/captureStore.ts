@@ -112,6 +112,7 @@ const PERSIST_OPS = new Set([
   'SearchTimeline',
   'UserTweets',
   'UserByScreenName',
+  'HomeTimeline',
 ]);
 
 /** Merge a freshly-seen template into persisted storage (only ops we replay). */
@@ -187,6 +188,33 @@ export async function fetchProfilePosts(
     cursor = next;
   }
   return getProfilePosts(handle).length;
+}
+
+/**
+ * Read the user's home timeline by replaying HomeTimeline (session-replay;
+ * ToS-sensitive — caller gates this behind the Feed access opt-in). Paginates,
+ * dedupes by id, filters promoted entries, and returns the posts. Returns []
+ * if the template isn't primed yet (visit x.com home once to capture it).
+ */
+export async function fetchHomeTimeline(
+  maxPages = 5,
+  cap = 120,
+  onProgress?: (count: number) => void,
+): Promise<TweetData[]> {
+  const byId = new Map<string, TweetData>();
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages && byId.size < cap; page++) {
+    const res = await runOp('HomeTimeline', { count: 40, cursor });
+    if (!res.ok) break;
+    for (const t of collectTweets(res.json, cap, true)) {
+      if (t.id && !byId.has(t.id)) byId.set(t.id, t);
+    }
+    onProgress?.(byId.size);
+    const next = findBottomCursor(res.json);
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return [...byId.values()].slice(0, cap);
 }
 
 export function getConversation(tweetId: string): Conversation | undefined {
