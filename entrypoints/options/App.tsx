@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { buildAuthorizeUrl, exchangeCode, generatePkce } from '@/utils/oauth';
 import { DEFAULT_SETTINGS, MODELS, getSettings, saveSettings } from '@/utils/settings';
-import type { Settings } from '@/utils/types';
+import type { OpenAIConfig, Settings } from '@/utils/types';
 
 type OAuthStep = 'idle' | 'waiting-for-code' | 'exchanging';
 
@@ -13,6 +13,7 @@ export default function App() {
   const [verifier, setVerifier] = useState('');
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [primed, setPrimed] = useState({ tweets: false, search: false, profiles: false });
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     void getSettings().then((s) => {
@@ -63,6 +64,53 @@ export default function App() {
     setNotice({ kind: 'ok', text: 'Disconnected.' });
   };
 
+  const updateOpenAI = (patch: Partial<OpenAIConfig>) => {
+    update({ openai: { ...settings.openai, ...patch } });
+  };
+
+  // Request host permission for the configured endpoint, then list its models.
+  const testOpenAI = async () => {
+    setNotice(null);
+    const base = settings.openai.baseUrl.trim().replace(/\/$/, '');
+    if (!base) {
+      setNotice({ kind: 'err', text: 'Enter a base URL first.' });
+      return;
+    }
+    let origin: string;
+    try {
+      origin = new URL(base).origin;
+    } catch {
+      setNotice({ kind: 'err', text: 'That base URL is not valid.' });
+      return;
+    }
+    setTesting(true);
+    try {
+      const granted = await browser.permissions.request({ origins: [`${origin}/*`] });
+      if (!granted) {
+        setNotice({ kind: 'err', text: 'Permission to reach that endpoint was denied.' });
+        return;
+      }
+      const headers: Record<string, string> = {};
+      if (settings.openai.apiKey) headers.authorization = `Bearer ${settings.openai.apiKey}`;
+      const res = await fetch(`${base}/models`, { headers });
+      if (!res.ok) {
+        setNotice({
+          kind: 'err',
+          text: `Access granted, but /models returned ${res.status}. You can still type a model id manually.`,
+        });
+        return;
+      }
+      const json = (await res.json()) as { data?: { id?: string }[] };
+      const ids = (json.data ?? []).map((m) => m.id).filter((x): x is string => !!x);
+      updateOpenAI({ models: ids, model: settings.openai.model || ids[0] || '' });
+      setNotice({ kind: 'ok', text: `Connected — found ${ids.length} model${ids.length === 1 ? '' : 's'}.` });
+    } catch (e) {
+      setNotice({ kind: 'err', text: `Couldn't reach the endpoint: ${(e as Error).message}` });
+    } finally {
+      setTesting(false);
+    }
+  };
+
   if (!loaded) return null;
 
   const connected = Boolean(settings.oauth?.refreshToken);
@@ -76,6 +124,38 @@ export default function App() {
 
       {notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
 
+      <section>
+        <h2>Provider</h2>
+        <label className="radio">
+          <input
+            type="radio"
+            name="provider"
+            checked={settings.provider === 'anthropic'}
+            onChange={() => update({ provider: 'anthropic' })}
+          />
+          <div>
+            <strong>Anthropic (Claude)</strong>
+            <p>Native Claude — subscription or API key. Full tools + web search.</p>
+          </div>
+        </label>
+        <label className="radio">
+          <input
+            type="radio"
+            name="provider"
+            checked={settings.provider === 'openai'}
+            onChange={() => update({ provider: 'openai' })}
+          />
+          <div>
+            <strong>OpenAI-compatible endpoint</strong>
+            <p>
+              Any OpenAI-style API — OpenRouter, Groq, local llama.cpp/Ollama,
+              blackpilled.ai/api/v1, etc. Models may be uncensored; that's your call.
+            </p>
+          </div>
+        </label>
+      </section>
+
+      {settings.provider === 'anthropic' && (
       <section>
         <h2>Billing &amp; authentication</h2>
         <label className="radio">
@@ -164,20 +244,125 @@ export default function App() {
           </div>
         )}
       </section>
+      )}
 
-      <section>
-        <h2>Model</h2>
-        <select
-          value={settings.model}
-          onChange={(e) => update({ model: e.target.value })}
-        >
-          {MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </section>
+      {settings.provider === 'openai' && (
+        <section>
+          <h2>OpenAI-compatible endpoint</h2>
+          <div className="authbox">
+            <label className="field">
+              <span>Base URL</span>
+              <input
+                type="text"
+                placeholder="https://openrouter.ai/api/v1"
+                value={settings.openai.baseUrl}
+                onChange={(e) => updateOpenAI({ baseUrl: e.target.value.trim() })}
+              />
+            </label>
+            <label className="field">
+              <span>API key</span>
+              <input
+                type="password"
+                placeholder="sk-… (blank for local servers)"
+                value={settings.openai.apiKey}
+                onChange={(e) => updateOpenAI({ apiKey: e.target.value.trim() })}
+              />
+            </label>
+            <label className="field">
+              <span>Model</span>
+              <input
+                type="text"
+                placeholder="e.g. blackpilled-35b, openai/gpt-4o-mini"
+                value={settings.openai.model}
+                onChange={(e) => updateOpenAI({ model: e.target.value.trim() })}
+              />
+            </label>
+            <label className="field">
+              <span>Max output tokens</span>
+              <input
+                type="number"
+                min={256}
+                max={32000}
+                step={256}
+                value={settings.openai.maxTokens}
+                onChange={(e) => updateOpenAI({ maxTokens: Number(e.target.value) || 4096 })}
+              />
+            </label>
+            <label className="field">
+              <span>Web search</span>
+              <select
+                value={settings.openai.webSearchMode}
+                onChange={(e) =>
+                  updateOpenAI({ webSearchMode: e.target.value as 'off' | 'openrouter' | 'tavily' })
+                }
+              >
+                <option value="off">Off</option>
+                <option value="openrouter">OpenRouter built-in (no key)</option>
+                <option value="tavily">Tavily API key</option>
+              </select>
+            </label>
+            {settings.openai.webSearchMode === 'tavily' && (
+              <label className="field">
+                <span>Tavily API key</span>
+                <input
+                  type="password"
+                  placeholder="tvly-…"
+                  value={settings.openai.tavilyKey}
+                  onChange={(e) => updateOpenAI({ tavilyKey: e.target.value.trim() })}
+                />
+              </label>
+            )}
+            <p className="hint">
+              <strong>OpenRouter</strong>: uses its built-in web plugin — no extra key, bills
+              your OpenRouter credits. <strong>Tavily</strong>: free-tier search (tavily.com);
+              the model calls it as a tool and sources show under the answer. Either way, web
+              search needs a tool-capable model.
+            </p>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.openai.disableThinking}
+                onChange={(e) => updateOpenAI({ disableThinking: e.target.checked })}
+              />
+              <div>
+                <strong>Disable model thinking</strong>
+                <p>
+                  For reasoning models (e.g. blackpilled-35b / Qwen on llama.cpp) that
+                  stream chain-of-thought into <code>reasoning_content</code> and leave
+                  the answer empty. Sends <code>chat_template_kwargs.enable_thinking=false</code>.
+                  Leave OFF for OpenAI / OpenRouter.
+                </p>
+              </div>
+            </label>
+            <div className="row">
+              <button className="primary" disabled={testing} onClick={() => void testOpenAI()}>
+                {testing ? 'Connecting…' : 'Test & grant access'}
+              </button>
+              {settings.openai.models.length > 0 && (
+                <span className="pill ok">{settings.openai.models.length} models</span>
+              )}
+            </div>
+            <p className="hint">
+              Grants the extension permission to reach that origin, then lists its models.
+              X tools use this model's function calling when enabled; web search stays
+              Anthropic-only.
+            </p>
+          </div>
+        </section>
+      )}
+
+      {settings.provider === 'anthropic' && (
+        <section>
+          <h2>Model</h2>
+          <select value={settings.model} onChange={(e) => update({ model: e.target.value })}>
+            {MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </section>
+      )}
 
       <section>
         <h2>Context</h2>

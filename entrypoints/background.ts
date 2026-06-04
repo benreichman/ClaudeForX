@@ -10,6 +10,7 @@ import {
   X_TOOLS_SYSTEM,
 } from '@/utils/prompts';
 import { getSettings } from '@/utils/settings';
+import { toOpenAIMessages, toOpenAITools } from '@/utils/openaiAdapter';
 import type {
   ApiImageBlock,
   ChatMessage,
@@ -71,6 +72,18 @@ const X_TOOL_DEFS = [
   },
 ];
 
+/** Web search as an OpenAI client tool (Tavily-backed, mirrors blackpilled). */
+const WEB_SEARCH_TOOL = {
+  name: 'web_search',
+  description:
+    'Search the web for current, recent, or post-training information — news, events, prices, live data, anything that may have changed since training. Returns result snippets with URLs; cite them inline as markdown links.',
+  input_schema: {
+    type: 'object',
+    properties: { query: { type: 'string', description: "A concise search query." } },
+    required: ['query'],
+  },
+};
+
 type Port = ReturnType<typeof browser.runtime.connect>;
 
 export default defineBackground(() => {
@@ -125,6 +138,7 @@ function send(port: Port, msg: StreamMessage): void {
   }
 }
 
+/** Dispatch to the configured provider. */
 async function run(
   port: Port,
   msg: RunRequest,
@@ -132,7 +146,19 @@ async function run(
   toolWaiters: Map<string, (content: string) => void>,
 ): Promise<void> {
   const settings = await getSettings();
+  if (settings.provider === 'openai') {
+    return runOpenAI(port, msg, signal, toolWaiters, settings);
+  }
+  return runAnthropic(port, msg, signal, toolWaiters, settings);
+}
 
+async function runAnthropic(
+  port: Port,
+  msg: RunRequest,
+  signal: AbortSignal,
+  toolWaiters: Map<string, (content: string) => void>,
+  settings: Settings,
+): Promise<void> {
   const system: { type: 'text'; text: string }[] = [];
   if (settings.authMode === 'oauth') {
     system.push({ type: 'text', text: CLAUDE_CODE_SYSTEM });
@@ -191,6 +217,285 @@ async function run(
     send(port, { type: 'web-sources', sources: deduped });
   }
   send(port, { type: 'done' });
+}
+
+// ---- OpenAI-compatible provider (any /v1/chat/completions endpoint) ----
+
+interface OpenAIToolCall {
+  id: string;
+  name: string;
+  input: unknown;
+  argsRaw: string;
+}
+
+async function runOpenAI(
+  port: Port,
+  msg: RunRequest,
+  signal: AbortSignal,
+  toolWaiters: Map<string, (content: string) => void>,
+  settings: Settings,
+): Promise<void> {
+  const cfg = settings.openai;
+  if (!cfg?.baseUrl || !cfg?.model) {
+    throw new Error('Configure the OpenAI-compatible endpoint (base URL + model) in settings.');
+  }
+
+  const searchMode = cfg.webSearchMode ?? 'off';
+
+  // System prompt + tools. X tools and web search are both exposed via OpenAI
+  // function calling (web search only in 'tavily' mode; 'openrouter' uses a
+  // server-side plugin, no client tool).
+  let systemText = msg.mode === 'general' ? GENERAL_SYSTEM : MAIN_SYSTEM;
+  if (settings.xTools) systemText += `\n\n${X_TOOLS_SYSTEM}`;
+  if (searchMode === 'tavily') {
+    systemText +=
+      '\n\nYou have a `web_search` tool. For anything about current events, recent info, prices, live data, or that may have changed since training, you MUST call `web_search` to get real results — do NOT answer from memory. Cite only URLs the tool actually returned, as markdown links. NEVER invent, guess, or label a link as "hypothetical" or "representative". If you did not call the tool, do not claim you searched.';
+  } else if (searchMode === 'openrouter') {
+    systemText +=
+      '\n\nYou have live web access. Use it for current/recent info and cite the sources you actually used as inline markdown links — [title](url). Never fabricate URLs.';
+  }
+
+  const toolDefs: { name: string; description: string; input_schema: unknown }[] = [];
+  if (settings.xTools) toolDefs.push(...X_TOOL_DEFS);
+  if (searchMode === 'tavily') toolDefs.push(WEB_SEARCH_TOOL);
+  const tools = toolDefs.length ? toOpenAITools(toolDefs) : undefined;
+
+  const messages = toOpenAIMessages(systemText, msg.messages);
+  const webCitations: WebSource[] = [];
+  let toolBudget = MAX_TOOL_CALLS;
+
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
+    const { text, toolCalls } = await streamOpenAITurn(settings, messages, tools, signal, port);
+    if (!toolCalls.length) break;
+
+    // Assistant message that requested the tools (must echo tool_calls).
+    messages.push({
+      role: 'assistant',
+      content: text || null,
+      tool_calls: toolCalls.map((c) => ({
+        id: c.id,
+        type: 'function',
+        function: { name: c.name, arguments: c.argsRaw },
+      })),
+    });
+
+    for (const c of toolCalls) {
+      if (toolBudget <= 0) {
+        messages.push({ role: 'tool', tool_call_id: c.id, content: '(tool-call limit reached for this question)' });
+        continue;
+      }
+      toolBudget--;
+
+      if (c.name === 'web_search') {
+        // Worker-side: hit Tavily directly (the panel can't, due to CORS).
+        const query = String((c.input as { query?: string })?.query ?? '');
+        send(port, { type: 'web-search-start', query });
+        const { content, sources } = await runWebSearch(query, cfg.tavilyKey);
+        send(port, { type: 'web-search-results', query, results: sources });
+        webCitations.push(...sources);
+        messages.push({ role: 'tool', tool_call_id: c.id, content });
+        continue;
+      }
+
+      // X tools run in the page (they need the user's session).
+      send(port, { type: 'status', text: toolStatus(c.name, c.input) });
+      const content = await execTool(port, toolWaiters, c.id, c.name, c.input, signal);
+      messages.push({ role: 'tool', tool_call_id: c.id, content });
+    }
+  }
+
+  if (webCitations.length) {
+    const seen = new Set<string>();
+    send(port, {
+      type: 'web-sources',
+      sources: webCitations.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true))),
+    });
+  }
+  send(port, { type: 'done' });
+}
+
+/** Tavily web search (mirrors blackpilled's lib/tools/web-search.ts). */
+async function runWebSearch(
+  query: string,
+  apiKey: string,
+): Promise<{ content: string; sources: WebSource[] }> {
+  if (!query.trim()) return { content: 'No search query provided.', sources: [] };
+  if (!apiKey) return { content: 'Web search is not configured (no Tavily API key).', sources: [] };
+  try {
+    const res = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        search_depth: 'basic',
+        max_results: 5,
+        include_answer: false,
+      }),
+    });
+    if (!res.ok) return { content: `Web search failed (${res.status}).`, sources: [] };
+    const data = (await res.json()) as { results?: { title: string; url: string; content: string }[] };
+    const list = data.results ?? [];
+    const sources: WebSource[] = list.map((r) => ({ url: r.url, title: r.title }));
+    const content = list.length
+      ? list.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${(r.content ?? '').slice(0, 800)}`).join('\n\n')
+      : `No results for "${query}".`;
+    return { content, sources };
+  } catch (e) {
+    return { content: `Web search error: ${(e as Error).message}`, sources: [] };
+  }
+}
+
+/** One streamed OpenAI turn: forwards text deltas, accumulates tool calls. */
+async function streamOpenAITurn(
+  settings: Settings,
+  messages: unknown[],
+  tools: unknown[] | undefined,
+  signal: AbortSignal,
+  port: Port,
+): Promise<{ text: string; toolCalls: OpenAIToolCall[] }> {
+  const cfg = settings.openai;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (cfg.apiKey) headers.authorization = `Bearer ${cfg.apiKey}`;
+
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+    max_tokens: cfg.maxTokens || 4096,
+  };
+  if (tools && tools.length) {
+    body.tools = tools;
+    body.tool_choice = 'auto';
+  }
+  // Reasoning models (Qwen on llama.cpp, e.g. blackpilled-35b) otherwise dump
+  // everything into reasoning_content and leave `content` empty.
+  if (cfg.disableThinking) {
+    body.chat_template_kwargs = { enable_thinking: false };
+  }
+  // OpenRouter's built-in web search plugin (no separate key; bills OR credits).
+  if (cfg.webSearchMode === 'openrouter') {
+    body.plugins = [{ id: 'web', max_results: 5 }];
+  }
+
+  const url = `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const res = await fetch(url, {
+    method: 'POST',
+    signal,
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => '');
+    // A 400 with thinking disabled usually means the endpoint rejects the
+    // chat_template_kwargs field (OpenAI/OpenRouter) — give an actionable hint.
+    if (
+      res.status === 400 &&
+      cfg.disableThinking &&
+      /enable_thinking|chat_template_kwargs|unrecognized|unexpected|unknown|extra/i.test(errText)
+    ) {
+      throw new Error(
+        "This endpoint rejected the “Disable thinking” option — turn it off for this provider (it's only for Qwen/llama.cpp endpoints like blackpilled).",
+      );
+    }
+    throw new Error(humanizeApiError(res.status, errText));
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let text = '';
+  let reasoning = '';
+  let finishReason: string | null = null;
+  const annotations: WebSource[] = []; // OpenRouter url_citation results
+  // Accumulate streamed tool calls by index (id/name arrive once, args in chunks).
+  const calls: Record<number, { id: string; name: string; args: string }> = {};
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    let idx: number;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+
+      let ev: any;
+      try {
+        ev = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      const choice = ev.choices?.[0];
+      if (!choice) continue;
+      const delta = choice.delta ?? {};
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+
+      const reasoningChunk = delta.reasoning_content ?? delta.reasoning;
+      if (typeof reasoningChunk === 'string') reasoning += reasoningChunk;
+
+      if (Array.isArray(delta.annotations)) {
+        for (const a of delta.annotations) {
+          const u = a?.url_citation;
+          if (u?.url) annotations.push({ url: u.url, title: u.title ?? u.url });
+        }
+      }
+
+      if (typeof delta.content === 'string' && delta.content) {
+        text += delta.content;
+        send(port, { type: 'delta', text: delta.content });
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const i = tc.index ?? 0;
+          const c = (calls[i] ??= { id: '', name: '', args: '' });
+          if (tc.id) c.id = tc.id;
+          if (tc.function?.name) c.name = tc.function.name;
+          if (tc.function?.arguments) c.args += tc.function.arguments;
+        }
+      }
+    }
+  }
+
+  const toolCalls: OpenAIToolCall[] = Object.values(calls)
+    .filter((c) => c.name)
+    .map((c) => {
+      let input: unknown = {};
+      try {
+        input = JSON.parse(c.args || '{}');
+      } catch {
+        input = {};
+      }
+      return { id: c.id || `call_${c.name}`, name: c.name, input, argsRaw: c.args || '{}' };
+    });
+
+  // OpenRouter built-in search surfaces citations as message annotations.
+  if (annotations.length) {
+    const seen = new Set<string>();
+    send(port, {
+      type: 'web-sources',
+      sources: annotations.filter((a) => (seen.has(a.url) ? false : (seen.add(a.url), true))),
+    });
+  }
+
+  // Safety net: model produced only hidden reasoning and no answer/tool call.
+  // Surface the reasoning (better than a blank reply) with a hint.
+  if (!text && !toolCalls.length && reasoning) {
+    const truncated = finishReason === 'length';
+    const note = truncated
+      ? '\n\n_(Truncated — raise max tokens, or enable “Disable thinking” for this model.)_'
+      : '\n\n_(This model returned only reasoning — enable “Disable thinking” for it.)_';
+    const fallback = reasoning + note;
+    send(port, { type: 'delta', text: fallback });
+    text = fallback;
+  }
+
+  return { text, toolCalls };
 }
 
 function toolStatus(name: string, input: unknown): string {

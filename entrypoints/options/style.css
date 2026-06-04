@@ -251,3 +251,10 @@ button.linklike {
   font-size: 11px;
   color: var(--muted);
 }
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 0;
+  line-height: 1.5;
+}

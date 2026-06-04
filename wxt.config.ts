@@ -13,7 +13,12 @@ export default defineConfig({
       // Lets the service worker fetch tweet images cross-origin (bypasses CORS)
       // to inline them as base64 for Claude's vision.
       'https://pbs.twimg.com/*',
+      // Tavily web search (OpenAI-compatible provider path).
+      'https://api.tavily.com/*',
     ],
+    // Requested at runtime (from the options page) when the user saves a custom
+    // OpenAI-compatible endpoint, so the worker may fetch that origin.
+    optional_host_permissions: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],
     // No popup — clicking the toolbar icon opens the options page (see background.ts).
     action: {
       default_title: 'Claude for X — settings',

@@ -7,9 +7,20 @@ export const MODELS = [
 ] as const;
 
 export const DEFAULT_SETTINGS: Settings = {
+  provider: 'anthropic',
   authMode: 'oauth',
   apiKey: '',
   model: 'claude-sonnet-4-6',
+  openai: {
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    models: [],
+    disableThinking: false,
+    maxTokens: 4096,
+    webSearchMode: 'off',
+    tavilyKey: '',
+  },
   maxReplies: 60,
   webSearch: true,
   activeFetch: true,

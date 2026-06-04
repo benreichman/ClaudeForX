@@ -3,9 +3,9 @@ import { gatherContext, gatherProfileContext } from '@/utils/contextBuilder';
 import { renderMarkdown } from '@/utils/markdown';
 import { panelBus, type OpenRequest } from '@/utils/panelBus';
 import { ACTIONS } from '@/utils/prompts';
-import { getSettings, saveSettings } from '@/utils/settings';
+import { MODELS, getSettings, saveSettings } from '@/utils/settings';
 import { executeTool } from '@/utils/xTools';
-import { ModelPicker } from './ModelPicker';
+import { ModelPicker, type ModelOption } from './ModelPicker';
 import type {
   ActionId,
   ApiImageBlock,
@@ -101,7 +101,10 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState('');
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [provider, setProvider] = useState<'anthropic' | 'openai'>('anthropic');
   const [model, setModel] = useState<string>('claude-sonnet-4-6');
+  const [openaiModel, setOpenaiModel] = useState<string>('');
+  const [openaiModels, setOpenaiModels] = useState<string[]>([]);
   // Panel expanded vs. minimized to the launcher bubble. Closed by default, so
   // the launcher is present on every X page (always-on mode).
   const [open, setOpen] = useState(false);
@@ -173,14 +176,38 @@ export default function App() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns, status]);
 
-  // Load the current model once (for the footer quick-switcher).
+  // Load provider + models once (for the footer quick-switcher).
   useEffect(() => {
-    void getSettings().then((s) => setModel(s.model));
+    void getSettings().then((s) => {
+      setProvider(s.provider);
+      setModel(s.model);
+      setOpenaiModel(s.openai?.model ?? '');
+      setOpenaiModels(s.openai?.models ?? []);
+    });
   }, []);
 
-  const onModelChange = (m: string) => {
-    setModel(m);
-    void saveSettings({ model: m });
+  const modelOptions: ModelOption[] =
+    provider === 'openai'
+      ? (openaiModels.length ? openaiModels : openaiModel ? [openaiModel] : []).map((id) => ({
+          id,
+          name: id,
+        }))
+      : MODELS.map((m) => ({
+          id: m.id,
+          name: m.label.split('—')[0].trim(),
+          desc: m.label.split('—')[1]?.trim(),
+        }));
+  const modelValue = provider === 'openai' ? openaiModel : model;
+
+  const onModelChange = async (id: string) => {
+    if (provider === 'openai') {
+      setOpenaiModel(id);
+      const s = await getSettings();
+      await saveSettings({ openai: { ...s.openai, model: id } });
+    } else {
+      setModel(id);
+      await saveSettings({ model: id });
+    }
   };
 
   // Show an "Ask Claude" popover when the user selects text anywhere on X.
@@ -768,7 +795,7 @@ export default function App() {
 
         <footer className="cgx-footer">
           <div className="cgx-footmeta">
-            <ModelPicker value={model} onChange={onModelChange} />
+            <ModelPicker options={modelOptions} value={modelValue} onChange={onModelChange} />
             {meta && <span className="cgx-meta">{meta}</span>}
           </div>
           <form

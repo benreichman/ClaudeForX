@@ -189,10 +189,28 @@ export interface OAuthTokens {
   expiresAt: number;
 }
 
+/** Config for an OpenAI-compatible endpoint (OpenAI, OpenRouter, local, blackpilled…). */
+export interface OpenAIConfig {
+  baseUrl: string; // e.g. https://openrouter.ai/api/v1 (no trailing slash)
+  apiKey: string;
+  model: string;
+  models: string[]; // optional cache populated from /models
+  /** Send chat_template_kwargs.enable_thinking=false (for Qwen/llama.cpp reasoning models). */
+  disableThinking: boolean;
+  /** Max output tokens for this endpoint. */
+  maxTokens: number;
+  /** Web search: off, OpenRouter's built-in plugin (no key), or a Tavily key. */
+  webSearchMode: 'off' | 'openrouter' | 'tavily';
+  tavilyKey: string;
+}
+
 export interface Settings {
+  /** Which backend to use. 'anthropic' = native; 'openai' = any compatible endpoint. */
+  provider: 'anthropic' | 'openai';
   authMode: 'oauth' | 'apikey';
   apiKey: string;
   model: string;
+  openai: OpenAIConfig;
   maxReplies: number;
   webSearch: boolean;
   activeFetch: boolean;
