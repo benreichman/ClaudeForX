@@ -61,7 +61,6 @@ async function searchX(query: string, product: 'Top' | 'Latest'): Promise<ToolRu
     cursor: undefined,
   });
   const tweets = collectTweets(res.json, MAX_RESULTS);
-  console.debug('[claude-for-x] search_x', { query, product, ok: res.ok, status: res.status, error: res.error, tweets: tweets.length });
   if (!res.ok) {
     const note =
       res.status === 404 || res.status === 400

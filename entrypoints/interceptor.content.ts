@@ -291,13 +291,12 @@ export default defineContentScript({
         const url = buildOpUrl(template, merged);
         const headers = { ...base };
         delete headers['content-length'];
-        if (!own) {
-          // No captured token for this op (e.g. after a refresh) — mint one.
-          // A wrong token from another op would be worse than a generated one.
-          const gen = await generateTransactionId('GET', new URL(url).pathname);
-          if (gen) headers['x-client-transaction-id'] = gen;
-          else delete headers['x-client-transaction-id'];
-        }
+        // ALWAYS mint a fresh token. X treats x-client-transaction-id as
+        // single-use, so reusing a captured one fails on the 2nd request of a
+        // turn. A freshly generated token is unique per call.
+        const gen = await generateTransactionId('GET', new URL(url).pathname);
+        if (gen) headers['x-client-transaction-id'] = gen;
+        else if (!own?.['x-client-transaction-id']) delete headers['x-client-transaction-id'];
         const res = await origFetch(url, { headers, credentials: 'include' });
         const text = await res.text();
         let json: unknown;

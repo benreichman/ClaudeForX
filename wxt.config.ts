@@ -18,5 +18,11 @@ export default defineConfig({
     action: {
       default_title: 'Claude for X — settings',
     },
+    web_accessible_resources: [
+      {
+        resources: ['fonts/*'],
+        matches: ['*://x.com/*', '*://twitter.com/*'],
+      },
+    ],
   },
 });

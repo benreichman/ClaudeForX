@@ -182,13 +182,11 @@ async function init(): Promise<boolean> {
   // 2. on-demand JS file → byte-index constants
   const url = resolveOnDemandUrl(doc);
   if (!url) throw new Error('ondemand.s chunk not found in home HTML');
-  console.debug('[claude-for-x] ondemand file:', url);
   const js = await (await fetch(url)).text();
   const indices: number[] = [];
   let mm: RegExpExecArray | null;
   INDICES_RE.lastIndex = 0;
   while ((mm = INDICES_RE.exec(js))) indices.push(parseInt(mm[1], 10));
-  console.debug('[claude-for-x] parsed indices:', indices);
   if (indices.length < 2) throw new Error('no key-byte indices in ondemand file');
   rowIndex = indices[0];
   keyByteIndices = indices.slice(1);
@@ -202,7 +200,6 @@ async function init(): Promise<boolean> {
   animationKey = animate(frameRow, frameTime / TOTAL_TIME);
 
   ready = true;
-  console.debug('[claude-for-x] transaction-id generator ready');
   return true;
 }
 
