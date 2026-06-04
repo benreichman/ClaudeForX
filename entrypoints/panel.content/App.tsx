@@ -43,11 +43,13 @@ import {
 } from './icons';
 import { SourcesStrip, ToolCardView } from './ToolCards';
 
-/** "2.3k in · 410 out" — plus "· ≈$0.01" when we have a price for the model. */
+/** "2.3k in · 410 out" — plus a cost: exact "$0.01" when the provider reports it,
+ * else an estimated "≈$0.01" when we have a price for the model. */
 function usageLabel(u: UsageInfo, price: ReturnType<typeof priceFor>): string {
   const base = `${formatTokens(u.inputTokens)} in · ${formatTokens(u.outputTokens)} out`;
-  const cost = estimateCost(u, price);
-  return cost != null ? `${base} · ≈${formatCost(cost)}` : base;
+  if (u.costUsd != null) return `${base} · ${formatCost(u.costUsd)}`;
+  const est = estimateCost(u, price);
+  return est != null ? `${base} · ≈${formatCost(est)}` : base;
 }
 
 function relativeTime(ts: number): string {
@@ -238,6 +240,20 @@ export default function App() {
     { inputTokens: 0, outputTokens: 0, webSearches: 0 },
   );
   const sessionHasUsage = sessionUsage.inputTokens > 0 || sessionUsage.outputTokens > 0;
+  // Prefer exact provider-reported cost when EVERY turn with usage carries it
+  // (consistent within a provider session); otherwise fall back to the estimate.
+  const turnsWithUsage = turns.filter((t) => t.usage);
+  const sessionCostExact =
+    turnsWithUsage.length > 0 && turnsWithUsage.every((t) => t.usage!.costUsd != null)
+      ? turnsWithUsage.reduce((s, t) => s + (t.usage!.costUsd ?? 0), 0)
+      : null;
+  const sessionEstimate = estimateCost(sessionUsage, price);
+  const sessionCostLabel =
+    sessionCostExact != null
+      ? formatCost(sessionCostExact)
+      : sessionEstimate != null
+        ? `≈${formatCost(sessionEstimate)}`
+        : null;
 
   const onModelChange = async (id: string) => {
     if (provider === 'openai') {
@@ -876,7 +892,7 @@ export default function App() {
                 title="Total tokens this session (exact, from the API)"
               >
                 Σ {formatTokens(sessionUsage.inputTokens + sessionUsage.outputTokens)} tok
-                {price ? ` · ≈${formatCost(estimateCost(sessionUsage, price)!)}` : ''}
+                {sessionCostLabel ? ` · ${sessionCostLabel}` : ''}
               </span>
             )}
           </div>

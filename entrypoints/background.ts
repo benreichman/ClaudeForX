@@ -276,6 +276,7 @@ async function runOpenAI(
     const { text, toolCalls, usage: turnUsage } = await streamOpenAITurn(settings, messages, tools, signal, port);
     usage.inputTokens += turnUsage.inputTokens;
     usage.outputTokens += turnUsage.outputTokens;
+    if (turnUsage.costUsd != null) usage.costUsd = (usage.costUsd ?? 0) + turnUsage.costUsd;
     if (!toolCalls.length) break;
 
     // Assistant message that requested the tools (must echo tool_calls).
@@ -389,6 +390,11 @@ async function streamOpenAITurn(
   if (cfg.webSearchMode === 'openrouter') {
     body.plugins = [{ id: 'web', max_results: 5 }];
   }
+  // DIAGNOSTIC: OpenRouter returns an exact usage.cost (USD) when you opt in
+  // here. Lets the meter verification compare token counts AND real cost.
+  if (/openrouter\.ai/i.test(cfg.baseUrl)) {
+    body.usage = { include: true };
+  }
 
   const url = `${cfg.baseUrl.replace(/\/$/, '')}/chat/completions`;
   const res = await fetch(url, {
@@ -448,6 +454,8 @@ async function streamOpenAITurn(
       if (ev.usage) {
         usage.inputTokens = ev.usage.prompt_tokens ?? usage.inputTokens;
         usage.outputTokens = ev.usage.completion_tokens ?? usage.outputTokens;
+        // Exact all-in USD when the provider reports it (OpenRouter's usage.cost).
+        if (typeof ev.usage.cost === 'number') usage.costUsd = ev.usage.cost;
       }
       const choice = ev.choices?.[0];
       if (!choice) continue;

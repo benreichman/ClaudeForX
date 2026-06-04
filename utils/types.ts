@@ -166,6 +166,9 @@ export interface UsageInfo {
   outputTokens: number;
   /** Server-side web searches performed (Anthropic web_search) — billed per request. */
   webSearches?: number;
+  /** Exact, all-in cost in USD when the provider reports it (e.g. OpenRouter's
+   * usage.cost — includes plugin/search fees). Absent → fall back to estimate. */
+  costUsd?: number;
 }
 
 /** A tweet shown inside an X tool card. */
