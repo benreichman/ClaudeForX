@@ -10,6 +10,37 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+const TWEET_URL = /(?:twitter|x)\.com\/([^/?#]+)\/status\/(\d+)/i;
+
+/** Render a link — tweet permalinks become compact "𝕏 @handle" chips. */
+function linkHtml(url: string, label: string): string {
+  const tweet = url.match(TWEET_URL);
+  if (tweet) {
+    return `<a class="cgx-tweet-link" href="${url}" target="_blank" rel="noopener noreferrer"><span class="cgx-x-glyph">𝕏</span>@${tweet[1]}</a>`;
+  }
+  let text = label;
+  if (text === url) {
+    // Bare URL — show just the domain to keep prose tidy.
+    const d = url.match(/^https?:\/\/([^/]+)/);
+    if (d) text = d[1].replace(/^www\./, '');
+  }
+  return `<a class="cgx-link" href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+}
+
+function autolink(html: string): string {
+  const parts = html.split(/(<a\b[^>]*>.*?<\/a>|<code>.*?<\/code>|<pre>[\s\S]*?<\/pre>)/g);
+  return parts
+    .map((seg, i) => {
+      if (i % 2 === 1) return seg; // protected (anchor / code) segment
+      return seg.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_m, pre: string, url: string) => {
+        const trail = (url.match(/[.,;:!?]+$/) || [''])[0];
+        const clean = trail ? url.slice(0, -trail.length) : url;
+        return `${pre}${linkHtml(clean, clean)}${trail}`;
+      });
+    })
+    .join('');
+}
+
 export function renderMarkdown(src: string): string {
   let html = escapeHtml(src);
 
@@ -25,10 +56,12 @@ export function renderMarkdown(src: string): string {
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/`([^`\n]+)`/g, '<code>$1</code>')
-    .replace(
-      /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, (_m, label: string, url: string) =>
+      linkHtml(url, label),
     );
+
+  // Autolink bare URLs that aren't already inside an anchor / code element.
+  html = autolink(html);
 
   // Unordered lists
   html = html.replace(/(?:^|\n)((?:[-*] .*(?:\n|$))+)/g, (_m, block: string) => {

@@ -3,6 +3,7 @@ import { gatherContext } from '@/utils/contextBuilder';
 import { renderMarkdown } from '@/utils/markdown';
 import { panelBus, type OpenRequest } from '@/utils/panelBus';
 import { ACTIONS } from '@/utils/prompts';
+import { executeTool } from '@/utils/xTools';
 import type {
   ActionId,
   ApiImageBlock,
@@ -138,6 +139,15 @@ export default function App() {
         });
       } else if (m.type === 'status') {
         setStatus(m.text);
+      } else if (m.type === 'tool-exec') {
+        // The worker is asking us to run a client tool (X session access).
+        void executeTool(m.name, m.input).then((content) => {
+          try {
+            port.postMessage({ type: 'tool-result', id: m.id, content });
+          } catch {
+            // port closed — ignore
+          }
+        });
       } else if (m.type === 'done') {
         setStatus('');
         setBusy(false);

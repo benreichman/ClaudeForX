@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS: Settings = {
   webSearch: true,
   activeFetch: true,
   sendImages: true,
+  xTools: false,
   oauth: null,
 };
 

@@ -220,10 +220,31 @@ export default function App() {
             onChange={(e) => update({ webSearch: e.target.checked })}
           />
           <div>
-            <strong>Web search for fact-checks</strong>
+            <strong>Web search</strong>
             <p>
-              Lets Claude search the web when you ask “Is this true?”. (Billed as tool use
-              on API-key mode.)
+              Lets Claude search the web for current info (news, recent events, anything
+              past training). Available in every mode. (Billed as tool use on API-key mode.)
+            </p>
+          </div>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={settings.xTools}
+            onChange={(e) => update({ xTools: e.target.checked })}
+          />
+          <div>
+            <strong>Let Claude search X (experimental)</strong>
+            <p>
+              Lets Claude search posts, pull a user's tweets, and fetch posts using your
+              logged-in X session — so you can ask “search X for…” in the general chat.{' '}
+              <em>
+                Unofficial &amp; off by default: this drives X's internal API on your
+                behalf, which is against X's automation rules and can hit rate limits or
+                flag your account. Use at your own risk.
+              </em>{' '}
+              Each operation must be “primed” once by doing it on X yourself (search once,
+              visit a profile once).
             </p>
           </div>
         </label>

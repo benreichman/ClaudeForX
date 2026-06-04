@@ -29,18 +29,20 @@ export interface Conversation {
 
 // ---- window messages between the MAIN-world interceptor and the content script ----
 
-/** Everything needed to reconstruct a TweetDetail GraphQL request from scratch. */
-export interface DetailTemplate {
+/** Everything needed to reconstruct an X GraphQL request from scratch. */
+export interface GqlTemplate {
   queryId: string;
   operationName: string;
   features: string | null;
   fieldToggles: string | null;
   variables: Record<string, unknown>;
 }
+/** @deprecated alias — kept so existing imports compile. */
+export type DetailTemplate = GqlTemplate;
 
 export type PageMessage =
   | { source: 'cgx-page'; type: 'capture'; op: string; url: string; json: unknown }
-  | { source: 'cgx-page'; type: 'detail-template'; template: DetailTemplate }
+  | { source: 'cgx-page'; type: 'gql-template'; op: string; template: GqlTemplate }
   | {
       source: 'cgx-page';
       type: 'fetch-more-result';
@@ -48,14 +50,34 @@ export type PageMessage =
       ok: boolean;
       status?: number;
       error?: string;
+    }
+  | {
+      source: 'cgx-page';
+      type: 'op-result';
+      requestId: number;
+      ok: boolean;
+      status?: number;
+      error?: string;
+      json?: unknown;
     };
 
 export type ContentMessage =
   | { source: 'cgx-content'; type: 'ready' }
-  | { source: 'cgx-content'; type: 'restore-template'; template: DetailTemplate }
-  | { source: 'cgx-content'; type: 'clear-template' }
+  | {
+      source: 'cgx-content';
+      type: 'restore-templates';
+      templates: Record<string, GqlTemplate>;
+    }
+  | { source: 'cgx-content'; type: 'clear-template'; op: string }
   | { source: 'cgx-content'; type: 'fetch-more'; cursor: string; requestId: number }
-  | { source: 'cgx-content'; type: 'fetch-detail'; tweetId: string; requestId: number };
+  | { source: 'cgx-content'; type: 'fetch-detail'; tweetId: string; requestId: number }
+  | {
+      source: 'cgx-content';
+      type: 'run-op';
+      op: string;
+      variables: Record<string, unknown>;
+      requestId: number;
+    };
 
 // ---- port messages between the content script and the background worker ----
 
@@ -71,11 +93,36 @@ export interface ApiImageBlock {
   source: { type: 'base64'; media_type: string; data: string };
 }
 
-export type ContentBlock = ApiTextBlock | ApiImageBlock;
+export interface ApiToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+export interface ApiToolResultBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+}
+
+/** Any other server-managed block (e.g. server_tool_use, web_search_tool_result)
+ * that we round-trip back to the API verbatim. */
+export interface ApiOpaqueBlock {
+  type: string;
+  [key: string]: unknown;
+}
+
+export type ContentBlock =
+  | ApiTextBlock
+  | ApiImageBlock
+  | ApiToolUseBlock
+  | ApiToolResultBlock
+  | ApiOpaqueBlock;
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
-  /** A plain string, or multimodal content blocks (text + images). */
+  /** A plain string, or content blocks (text/images/tool use/results). */
   content: string | ContentBlock[];
 }
 
@@ -88,6 +135,16 @@ export interface RunRequest {
   messages: ChatMessage[];
 }
 
+/** Content script → worker: result of executing a client-side tool. */
+export interface ToolResultReply {
+  type: 'tool-result';
+  id: string;
+  content: string;
+}
+
+/** Anything the panel sends to the worker over the port. */
+export type PanelToWorker = RunRequest | ToolResultReply;
+
 /** Request from a content script asking the worker to fetch + base64 images. */
 export interface FetchImagesRequest {
   type: 'fetch-images';
@@ -97,6 +154,7 @@ export interface FetchImagesRequest {
 export type StreamMessage =
   | { type: 'delta'; text: string }
   | { type: 'status'; text: string }
+  | { type: 'tool-exec'; id: string; name: string; input: unknown }
   | { type: 'done' }
   | { type: 'error'; message: string };
 
@@ -117,5 +175,7 @@ export interface Settings {
   webSearch: boolean;
   activeFetch: boolean;
   sendImages: boolean;
+  /** Let Claude search X / fetch posts via the user's session (off by default). */
+  xTools: boolean;
   oauth: OAuthTokens | null;
 }

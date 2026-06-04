@@ -6,7 +6,7 @@
 import type {
   Conversation,
   ContentMessage,
-  DetailTemplate,
+  GqlTemplate,
   PageMessage,
   TweetData,
 } from './types';
@@ -18,11 +18,19 @@ export interface FetchResult {
   error?: string;
 }
 
+export interface OpResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+  json?: unknown;
+}
+
 const conversations = new Map<string, Conversation>();
 const pendingFetches = new Map<number, (r: FetchResult) => void>();
+const pendingOps = new Map<number, (r: OpResult) => void>();
 let fetchSeq = 0;
 
-const TEMPLATE_KEY = 'detailTemplate';
+const TEMPLATE_KEY = 'gqlTemplates';
 
 /** True while the extension context is still alive (false after a reload). */
 function extValid(): boolean {
@@ -54,14 +62,19 @@ export function initCaptureStore(): void {
       } catch (err) {
         console.warn('[claude-for-x] failed to parse captured response', err);
       }
-    } else if (msg.type === 'detail-template') {
-      // Persist the query template so timeline fetches work in future sessions.
-      if (extValid()) browser.storage.local.set({ [TEMPLATE_KEY]: msg.template }).catch(() => {});
+    } else if (msg.type === 'gql-template') {
+      persistTemplate(msg.op, msg.template);
     } else if (msg.type === 'fetch-more-result') {
       const resolve = pendingFetches.get(msg.requestId);
       if (resolve) {
         pendingFetches.delete(msg.requestId);
         resolve({ ok: msg.ok, status: msg.status, error: msg.error });
+      }
+    } else if (msg.type === 'op-result') {
+      const resolve = pendingOps.get(msg.requestId);
+      if (resolve) {
+        pendingOps.delete(msg.requestId);
+        resolve({ ok: msg.ok, status: msg.status, error: msg.error, json: msg.json });
       }
     }
   });
@@ -70,16 +83,39 @@ export function initCaptureStore(): void {
   // before this script attached.
   post({ source: 'cgx-content', type: 'ready' });
 
-  // Hand the interceptor any template we saved in a previous session.
+  // Hand the interceptor every query template we saved in a previous session.
   if (extValid()) {
     browser.storage.local
       .get(TEMPLATE_KEY)
       .then((stored) => {
-        const template = stored[TEMPLATE_KEY] as DetailTemplate | undefined;
-        if (template) post({ source: 'cgx-content', type: 'restore-template', template });
+        const templates = (stored[TEMPLATE_KEY] as Record<string, GqlTemplate>) ?? {};
+        if (Object.keys(templates).length) {
+          post({ source: 'cgx-content', type: 'restore-templates', templates });
+        }
       })
       .catch(() => {});
   }
+}
+
+// Only the operations we actually replay are worth persisting.
+const PERSIST_OPS = new Set([
+  'TweetDetail',
+  'SearchTimeline',
+  'UserTweets',
+  'UserByScreenName',
+]);
+
+/** Merge a freshly-seen template into persisted storage (only ops we replay). */
+function persistTemplate(op: string, template: GqlTemplate): void {
+  if (!PERSIST_OPS.has(op) || !extValid()) return;
+  browser.storage.local
+    .get(TEMPLATE_KEY)
+    .then((stored) => {
+      const map = (stored[TEMPLATE_KEY] as Record<string, GqlTemplate>) ?? {};
+      map[op] = template;
+      return browser.storage.local.set({ [TEMPLATE_KEY]: map });
+    })
+    .catch(() => {});
 }
 
 function post(msg: ContentMessage): void {
@@ -142,10 +178,30 @@ export function fetchDetail(tweetId: string): Promise<FetchResult> {
   }));
 }
 
-/** Forget the cached query template (in memory + storage) after it goes stale. */
-export async function clearTemplate(): Promise<void> {
-  post({ source: 'cgx-content', type: 'clear-template' });
-  if (extValid()) await browser.storage.local.remove(TEMPLATE_KEY).catch(() => {});
+/** Replay an arbitrary read operation (SearchTimeline, UserTweets, …) and get raw JSON. */
+export function runOp(op: string, variables: Record<string, unknown>): Promise<OpResult> {
+  return new Promise((resolve) => {
+    const requestId = ++fetchSeq;
+    pendingOps.set(requestId, resolve);
+    post({ source: 'cgx-content', type: 'run-op', op, variables, requestId });
+    setTimeout(() => {
+      if (pendingOps.delete(requestId)) resolve({ ok: false, error: 'timeout' });
+    }, 15_000);
+  });
+}
+
+/** Forget a cached query template (memory + storage) after it goes stale. */
+export async function clearTemplate(op = 'TweetDetail'): Promise<void> {
+  post({ source: 'cgx-content', type: 'clear-template', op });
+  if (!extValid()) return;
+  try {
+    const stored = await browser.storage.local.get(TEMPLATE_KEY);
+    const map = (stored[TEMPLATE_KEY] as Record<string, GqlTemplate>) ?? {};
+    delete map[op];
+    await browser.storage.local.set({ [TEMPLATE_KEY]: map });
+  } catch {
+    // ignore
+  }
 }
 
 /** Send a request to the interceptor and resolve when its ack comes back. */

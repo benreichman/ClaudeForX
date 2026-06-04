@@ -483,6 +483,33 @@
   text-decoration: underline;
 }
 
+/* tweet permalink chips */
+.cgx-output a.cgx-tweet-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 10px 1px 8px;
+  margin: 1px 2px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  vertical-align: baseline;
+}
+
+.cgx-output a.cgx-tweet-link:hover {
+  border-color: var(--coral);
+  background: #2a2e33;
+  text-decoration: none;
+}
+
+.cgx-x-glyph {
+  font-weight: 800;
+}
+
 .cgx-output strong {
   font-weight: 700;
 }

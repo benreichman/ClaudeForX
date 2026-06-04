@@ -101,3 +101,58 @@ function addTweet(conv: Conversation, focalId: string, t: TweetData | null): voi
   if (t.id === focalId) conv.main = t;
   else conv.replies.set(t.id, t);
 }
+
+/**
+ * Resilient extractor for search / user-timeline responses: walk the whole JSON
+ * and parse every `tweet_results.result` we find, in document order, deduped by
+ * id. Avoids depending on the exact instruction/entry path (which varies by op).
+ */
+export function collectTweets(json: unknown, limit = 25): TweetData[] {
+  const out: TweetData[] = [];
+  const seen = new Set<string>();
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object' || out.length >= limit) return;
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (node.tweet_results && typeof node.tweet_results === 'object') {
+      const t = parseTweetResult(node.tweet_results.result);
+      if (t?.id && !seen.has(t.id)) {
+        seen.add(t.id);
+        out.push(t);
+      }
+    }
+    for (const key of Object.keys(node)) {
+      // Don't recurse into a nested quoted tweet — it's attached to its parent.
+      if (key === 'quoted_status_result') continue;
+      visit(node[key]);
+    }
+  };
+  visit(json);
+  return out.slice(0, limit);
+}
+
+/** Pull a user's numeric id (rest_id) out of a UserByScreenName response. */
+export function findUserId(json: unknown): string | null {
+  const direct = (json as any)?.data?.user?.result?.rest_id;
+  if (typeof direct === 'string') return direct;
+  // Fallback: first rest_id sitting next to a screen_name (i.e. a user object).
+  let found: string | null = null;
+  const visit = (node: any): void => {
+    if (found || !node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const i of node) visit(i);
+      return;
+    }
+    const hasScreenName =
+      node.core?.screen_name || node.legacy?.screen_name || node.screen_name;
+    if (typeof node.rest_id === 'string' && hasScreenName) {
+      found = node.rest_id;
+      return;
+    }
+    for (const k of Object.keys(node)) visit(node[k]);
+  };
+  visit(json);
+  return found;
+}
