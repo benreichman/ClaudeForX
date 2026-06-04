@@ -431,24 +431,6 @@ export default function App() {
             <span className="cgx-title">Claude</span>
           </div>
           <div className="cgx-tools">
-            {!general && (
-              <div className="cgx-select-wrap">
-                <select
-                  className="cgx-select"
-                  value={action}
-                  onChange={(e) => onActionChange(e.target.value as ActionId)}
-                >
-                  {(Object.keys(ACTIONS) as ActionId[]).map((id) => (
-                    <option key={id} value={id}>
-                      {ACTIONS[id].label}
-                    </option>
-                  ))}
-                </select>
-                <span className="cgx-caret" aria-hidden>
-                  ▾
-                </span>
-              </div>
-            )}
             <button
               className="cgx-iconbtn"
               title="New chat"
@@ -481,6 +463,27 @@ export default function App() {
             />
           </div>
         </header>
+
+        {!general && (
+          <div className="cgx-actionbar">
+            <div className="cgx-select-wrap">
+              <select
+                className="cgx-select"
+                value={action}
+                onChange={(e) => onActionChange(e.target.value as ActionId)}
+              >
+                {(Object.keys(ACTIONS) as ActionId[]).map((id) => (
+                  <option key={id} value={id}>
+                    {ACTIONS[id].label}
+                  </option>
+                ))}
+              </select>
+              <span className="cgx-caret" aria-hidden>
+                ▾
+              </span>
+            </div>
+          </div>
+        )}
 
         {showHistory && (
           <div className="cgx-history">
