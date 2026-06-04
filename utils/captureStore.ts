@@ -1,0 +1,185 @@
+// Content-script-side store of everything the MAIN-world interceptor has captured.
+// Listens for window messages from the interceptor and indexes conversations by
+// focal tweet id. Also drives active pagination (asking the interceptor to replay
+// TweetDetail with the next cursor).
+
+import type {
+  Conversation,
+  ContentMessage,
+  DetailTemplate,
+  PageMessage,
+  TweetData,
+} from './types';
+import { focalIdFromUrl, ingestTweetDetail, parseTweetResult } from './xParser';
+
+export interface FetchResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
+const conversations = new Map<string, Conversation>();
+const pendingFetches = new Map<number, (r: FetchResult) => void>();
+let fetchSeq = 0;
+
+const TEMPLATE_KEY = 'detailTemplate';
+
+/** True while the extension context is still alive (false after a reload). */
+function extValid(): boolean {
+  try {
+    return Boolean(browser.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function getOrCreate(id: string): Conversation {
+  let conv = conversations.get(id);
+  if (!conv) {
+    conv = { main: null, replies: new Map(), bottomCursor: null };
+    conversations.set(id, conv);
+  }
+  return conv;
+}
+
+export function initCaptureStore(): void {
+  window.addEventListener('message', (e: MessageEvent) => {
+    if (e.source !== window) return;
+    const msg = e.data as PageMessage;
+    if (!msg || msg.source !== 'cgx-page') return;
+
+    if (msg.type === 'capture') {
+      try {
+        ingestCapture(msg.op, msg.url, msg.json);
+      } catch (err) {
+        console.warn('[claude-for-x] failed to parse captured response', err);
+      }
+    } else if (msg.type === 'detail-template') {
+      // Persist the query template so timeline fetches work in future sessions.
+      if (extValid()) browser.storage.local.set({ [TEMPLATE_KEY]: msg.template }).catch(() => {});
+    } else if (msg.type === 'fetch-more-result') {
+      const resolve = pendingFetches.get(msg.requestId);
+      if (resolve) {
+        pendingFetches.delete(msg.requestId);
+        resolve({ ok: msg.ok, status: msg.status, error: msg.error });
+      }
+    }
+  });
+
+  // Tell the interceptor we're listening so it can flush anything it buffered
+  // before this script attached.
+  post({ source: 'cgx-content', type: 'ready' });
+
+  // Hand the interceptor any template we saved in a previous session.
+  if (extValid()) {
+    browser.storage.local
+      .get(TEMPLATE_KEY)
+      .then((stored) => {
+        const template = stored[TEMPLATE_KEY] as DetailTemplate | undefined;
+        if (template) post({ source: 'cgx-content', type: 'restore-template', template });
+      })
+      .catch(() => {});
+  }
+}
+
+function post(msg: ContentMessage): void {
+  window.postMessage(msg, '*');
+}
+
+function ingestCapture(op: string, url: string, json: unknown): void {
+  if (op === 'TweetDetail') {
+    const focalId = focalIdFromUrl(url);
+    if (!focalId) return;
+    ingestTweetDetail(getOrCreate(focalId), focalId, json);
+  } else if (op === 'TweetResultByRestId') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const t = parseTweetResult((json as any)?.data?.tweetResult?.result);
+    if (t?.id) getOrCreate(t.id).main = t;
+  }
+}
+
+export function getConversation(tweetId: string): Conversation | undefined {
+  return conversations.get(tweetId);
+}
+
+/** Find a tweet anywhere in the store — as a focal tweet or as someone's reply. */
+export function findTweet(tweetId: string): TweetData | null {
+  const own = conversations.get(tweetId);
+  if (own?.main) return own.main;
+  for (const conv of conversations.values()) {
+    const r = conv.replies.get(tweetId);
+    if (r) return r;
+  }
+  return null;
+}
+
+/** Messages to the interceptor that expect a fetch-more-result ack. */
+type RoundtripMessage =
+  | { source: 'cgx-content'; type: 'fetch-more'; cursor: string; requestId: number }
+  | { source: 'cgx-content'; type: 'fetch-detail'; tweetId: string; requestId: number };
+
+/** Ask the interceptor to replay TweetDetail with the given cursor. */
+function fetchMoreReplies(cursor: string): Promise<boolean> {
+  return roundtrip((requestId) => ({
+    source: 'cgx-content',
+    type: 'fetch-more',
+    cursor,
+    requestId,
+  })).then((r) => r.ok);
+}
+
+/**
+ * Ask the interceptor to build a fresh TweetDetail request for this tweet id
+ * (works even when the user never opened the tweet — e.g. from the timeline).
+ * On success the conversation is ingested under `tweetId`.
+ */
+export function fetchDetail(tweetId: string): Promise<FetchResult> {
+  return roundtrip((requestId) => ({
+    source: 'cgx-content',
+    type: 'fetch-detail',
+    tweetId,
+    requestId,
+  }));
+}
+
+/** Forget the cached query template (in memory + storage) after it goes stale. */
+export async function clearTemplate(): Promise<void> {
+  post({ source: 'cgx-content', type: 'clear-template' });
+  if (extValid()) await browser.storage.local.remove(TEMPLATE_KEY).catch(() => {});
+}
+
+/** Send a request to the interceptor and resolve when its ack comes back. */
+function roundtrip(build: (requestId: number) => RoundtripMessage): Promise<FetchResult> {
+  return new Promise((resolve) => {
+    const requestId = ++fetchSeq;
+    pendingFetches.set(requestId, resolve);
+    post(build(requestId));
+    // Don't hang the UI if the response never comes back.
+    setTimeout(() => {
+      if (pendingFetches.delete(requestId)) resolve({ ok: false, error: 'timeout' });
+    }, 12_000);
+  });
+}
+
+/**
+ * Actively paginate until we have `target` replies, there are no more pages,
+ * or we hit the round limit. The replayed responses flow back through the
+ * normal capture path, so `conv` updates as a side effect.
+ */
+export async function ensureReplies(
+  conv: Conversation,
+  target: number,
+  onProgress?: (count: number) => void,
+): Promise<void> {
+  let rounds = 0;
+  while (conv.bottomCursor && conv.replies.size < target && rounds < 4) {
+    onProgress?.(conv.replies.size);
+    const cursor = conv.bottomCursor;
+    // Clear before fetching — the response sets a fresh cursor if more pages exist,
+    // which also guarantees we never refetch the same page forever.
+    conv.bottomCursor = null;
+    const ok = await fetchMoreReplies(cursor);
+    if (!ok) break;
+    rounds++;
+  }
+}
