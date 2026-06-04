@@ -19,6 +19,7 @@ import type {
   RunRequest,
   Settings,
   StreamMessage,
+  WebSource,
 } from '@/utils/types';
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -147,6 +148,7 @@ async function run(
 
   const messages: ChatMessage[] = [...msg.messages];
   let toolBudget = MAX_TOOL_CALLS;
+  const citations: WebSource[] = [];
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const body: Record<string, unknown> = {
@@ -158,7 +160,7 @@ async function run(
     };
     if (tools.length) body.tools = tools;
 
-    const { stopReason, blocks } = await streamOnce(settings, body, signal, port);
+    const { stopReason, blocks } = await streamOnce(settings, body, signal, port, citations);
 
     // Only OUR client tools require a follow-up turn; web_search is server-side.
     const toolUses = blocks.filter(
@@ -183,6 +185,11 @@ async function run(
     messages.push({ role: 'user', content: results });
   }
 
+  if (citations.length) {
+    const seen = new Set<string>();
+    const deduped = citations.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true)));
+    send(port, { type: 'web-sources', sources: deduped });
+  }
   send(port, { type: 'done' });
 }
 
@@ -297,6 +304,7 @@ async function streamOnce(
   body: Record<string, unknown>,
   signal: AbortSignal,
   port: Port,
+  citations: WebSource[],
 ): Promise<StreamResult> {
   let res = await callApi(settings, body, signal, false);
   if (res.status === 401 && settings.authMode === 'oauth') {
@@ -316,6 +324,7 @@ async function streamOnce(
   const blocks: Record<number, ContentBlock> = {};
   const toolJson: Record<number, string> = {};
   let stopReason: string | null = null;
+  let lastWebQuery = '';
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -344,30 +353,47 @@ async function streamOnce(
           blocks[i] = block;
           if (block.type === 'server_tool_use') {
             send(port, { type: 'status', text: 'Searching the web…' });
+          } else if (block.type === 'web_search_tool_result') {
+            // Results arrive whole here (not via deltas).
+            const content = (block as { content?: unknown }).content;
+            const results = webResultsFrom(content);
+            send(port, { type: 'web-search-results', query: lastWebQuery, results });
           }
           break;
         }
         case 'content_block_delta': {
           const i = ev.index ?? 0;
-          const delta = ev.delta as { type?: string; text?: string; partial_json?: string };
+          const delta = ev.delta as {
+            type?: string;
+            text?: string;
+            partial_json?: string;
+            citation?: { url?: string; title?: string };
+          };
           if (delta?.type === 'text_delta' && delta.text) {
             send(port, { type: 'delta', text: delta.text });
             const b = blocks[i] as { type: string; text?: string };
             if (b && b.type === 'text') b.text = (b.text ?? '') + delta.text;
           } else if (delta?.type === 'input_json_delta') {
             toolJson[i] = (toolJson[i] ?? '') + (delta.partial_json ?? '');
+          } else if (delta?.type === 'citations_delta' && delta.citation?.url) {
+            citations.push({ url: delta.citation.url, title: delta.citation.title ?? delta.citation.url });
           }
           break;
         }
         case 'content_block_stop': {
           const i = ev.index ?? 0;
-          const b = blocks[i] as { type?: string; input?: unknown } | undefined;
+          const b = blocks[i] as { type?: string; name?: string; input?: unknown } | undefined;
           if (b && (b.type === 'tool_use' || b.type === 'server_tool_use') && toolJson[i]) {
             try {
               b.input = JSON.parse(toolJson[i]);
             } catch {
               b.input = {};
             }
+          }
+          // A completed web-search query block → tell the panel a search started.
+          if (b?.type === 'server_tool_use' && b.name === 'web_search') {
+            lastWebQuery = String((b.input as { query?: string })?.query ?? '');
+            send(port, { type: 'web-search-start', query: lastWebQuery });
           }
           break;
         }
@@ -389,6 +415,18 @@ async function streamOnce(
     .sort((a, b) => a - b)
     .map((i) => blocks[i]);
   return { stopReason, blocks: ordered };
+}
+
+/** Pull {url,title} out of a web_search_tool_result block's content array. */
+function webResultsFrom(content: unknown): WebSource[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((r) => r && (r as { type?: string }).type === 'web_search_result')
+    .map((r) => {
+      const o = r as { url?: string; title?: string };
+      return { url: o.url ?? '', title: o.title ?? o.url ?? '' };
+    })
+    .filter((r) => r.url);
 }
 
 // ---- image fetching (runs in the worker so host_permissions bypass CORS) ----

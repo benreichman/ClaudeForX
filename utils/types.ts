@@ -151,10 +151,32 @@ export interface FetchImagesRequest {
   urls: string[];
 }
 
+/** A web search result / source for the inline cards + sources strip. */
+export interface WebSource {
+  url: string;
+  title: string;
+}
+
+/** A tweet shown inside an X tool card. */
+export interface ToolTweet {
+  handle: string;
+  text: string;
+  url: string;
+  likes: number | null;
+}
+
+/** A tool-call card rendered inline in a turn and persisted with it. */
+export type ToolCard =
+  | { kind: 'web'; query: string; running: boolean; results: WebSource[] }
+  | { kind: 'x'; label: string; query?: string; tweets: ToolTweet[]; note?: string };
+
 export type StreamMessage =
   | { type: 'delta'; text: string }
   | { type: 'status'; text: string }
   | { type: 'tool-exec'; id: string; name: string; input: unknown }
+  | { type: 'web-search-start'; query: string }
+  | { type: 'web-search-results'; query: string; results: WebSource[] }
+  | { type: 'web-sources'; sources: WebSource[] }
   | { type: 'done' }
   | { type: 'error'; message: string };
 

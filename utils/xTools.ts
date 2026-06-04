@@ -6,11 +6,17 @@
 
 import { fetchDetail, getConversation, runOp } from './captureStore';
 import { collectTweets, findUserId } from './xParser';
-import type { TweetData } from './types';
+import type { ToolCard, ToolTweet, TweetData } from './types';
 
 const MAX_RESULTS = 18;
 
-export async function executeTool(name: string, rawInput: unknown): Promise<string> {
+/** Result of running a client tool: text for Claude + a card for the panel. */
+export interface ToolRun {
+  content: string;
+  card: ToolCard;
+}
+
+export async function executeTool(name: string, rawInput: unknown): Promise<ToolRun> {
   const input = (rawInput ?? {}) as Record<string, unknown>;
   try {
     switch (name) {
@@ -21,21 +27,32 @@ export async function executeTool(name: string, rawInput: unknown): Promise<stri
       case 'get_tweet':
         return await getTweet(String(input.id_or_url ?? ''));
       default:
-        return `Unknown tool: ${name}`;
+        return { content: `Unknown tool: ${name}`, card: { kind: 'x', label: name, tweets: [], note: 'unknown tool' } };
     }
   } catch (err) {
-    return `Tool "${name}" failed: ${(err as Error).message ?? String(err)}`;
+    const msg = `Tool "${name}" failed: ${(err as Error).message ?? String(err)}`;
+    return { content: msg, card: { kind: 'x', label: name, tweets: [], note: msg } };
   }
+}
+
+function toToolTweet(t: TweetData): ToolTweet {
+  return {
+    handle: t.handle,
+    text: t.text.length > 240 ? `${t.text.slice(0, 240)}…` : t.text,
+    url: t.handle && t.id ? `https://x.com/${t.handle}/status/${t.id}` : '',
+    likes: t.likes,
+  };
 }
 
 function normalizeProduct(p: unknown): 'Top' | 'Latest' {
   return String(p ?? 'Top').toLowerCase() === 'latest' ? 'Latest' : 'Top';
 }
 
-async function searchX(query: string, product: 'Top' | 'Latest'): Promise<string> {
-  if (!query.trim()) return 'No search query was provided.';
-  // Reset pagination/source vars so a cursor left over from the priming search
-  // doesn't poison the replay.
+async function searchX(query: string, product: 'Top' | 'Latest'): Promise<ToolRun> {
+  const label = 'Searched X';
+  if (!query.trim()) {
+    return { content: 'No search query was provided.', card: { kind: 'x', label, tweets: [], note: 'no query' } };
+  }
   const res = await runOp('SearchTimeline', {
     rawQuery: query,
     product,
@@ -43,59 +60,78 @@ async function searchX(query: string, product: 'Top' | 'Latest'): Promise<string
     querySource: 'typed_query',
     cursor: undefined,
   });
-  console.debug('[claude-for-x] search_x', { query, product, ok: res.ok, status: res.status, error: res.error, tweets: collectTweets(res.json, MAX_RESULTS).length });
-  if (!res.ok) {
-    if (res.status === 404 || res.status === 400) {
-      return 'X search is primed from your own usage and the cached query is stale. Run a search on X once, then try again.';
-    }
-    return res.error?.includes('template')
-      ? "X search isn't enabled yet — run a search on X once (so the extension can learn the request), then ask again."
-      : `Couldn't search X (${res.status ?? 'no response'}).`;
-  }
   const tweets = collectTweets(res.json, MAX_RESULTS);
-  if (!tweets.length) return `No posts found for "${query}".`;
-  return `Search results for "${query}" (${product}):\n\n${formatTweets(tweets)}`;
+  console.debug('[claude-for-x] search_x', { query, product, ok: res.ok, status: res.status, error: res.error, tweets: tweets.length });
+  if (!res.ok) {
+    const note =
+      res.status === 404 || res.status === 400
+        ? 'X search cache is stale — run a search on X once, then try again.'
+        : res.error?.includes('template')
+          ? "X search isn't enabled yet — run a search on X once, then ask again."
+          : `Couldn't search X (${res.status ?? 'no response'}).`;
+    return { content: note, card: { kind: 'x', label, query, tweets: [], note } };
+  }
+  if (!tweets.length) {
+    return { content: `No posts found for "${query}".`, card: { kind: 'x', label, query, tweets: [], note: 'no results' } };
+  }
+  return {
+    content: `Search results for "${query}" (${product}):\n\n${formatTweets(tweets)}`,
+    card: { kind: 'x', label, query, tweets: tweets.map(toToolTweet) },
+  };
 }
 
-async function getUserPosts(handleRaw: string): Promise<string> {
+async function getUserPosts(handleRaw: string): Promise<ToolRun> {
   const handle = handleRaw.replace(/^@/, '').trim();
-  if (!handle) return 'No handle was provided.';
-
+  const label = `@${handle || '?'} · posts`;
+  if (!handle) {
+    return { content: 'No handle was provided.', card: { kind: 'x', label, tweets: [], note: 'no handle' } };
+  }
   const userRes = await runOp('UserByScreenName', { screen_name: handle });
   if (!userRes.ok) {
-    return userRes.error?.includes('template')
-      ? "Fetching users isn't enabled yet — visit any profile on X once, then ask again."
+    const note = userRes.error?.includes('template')
+      ? 'Visit any profile on X once to enable this, then ask again.'
       : `Couldn't look up @${handle} (${userRes.status ?? 'no response'}).`;
+    return { content: note, card: { kind: 'x', label, tweets: [], note } };
   }
   const userId = findUserId(userRes.json);
-  if (!userId) return `Couldn't find a user with the handle @${handle}.`;
-
-  const postsRes = await runOp('UserTweets', { userId, count: 20, cursor: undefined });
-  if (!postsRes.ok) {
-    return postsRes.error?.includes('template')
-      ? "Fetching a user's posts isn't enabled yet — open any profile's posts on X once, then ask again."
-      : `Couldn't load @${handle}'s posts (${postsRes.status ?? 'no response'}).`;
+  if (!userId) {
+    const note = `Couldn't find a user with the handle @${handle}.`;
+    return { content: note, card: { kind: 'x', label, tweets: [], note } };
   }
+  const postsRes = await runOp('UserTweets', { userId, count: 20, cursor: undefined });
   const tweets = collectTweets(postsRes.json, MAX_RESULTS);
-  if (!tweets.length) return `@${handle} has no visible recent posts.`;
-  return `Recent posts from @${handle}:\n\n${formatTweets(tweets)}`;
+  if (!postsRes.ok || !tweets.length) {
+    const note = !postsRes.ok
+      ? `Couldn't load @${handle}'s posts (${postsRes.status ?? 'no response'}).`
+      : `@${handle} has no visible recent posts.`;
+    return { content: note, card: { kind: 'x', label, tweets: [], note } };
+  }
+  return {
+    content: `Recent posts from @${handle}:\n\n${formatTweets(tweets)}`,
+    card: { kind: 'x', label, tweets: tweets.map(toToolTweet) },
+  };
 }
 
-async function getTweet(idOrUrl: string): Promise<string> {
+async function getTweet(idOrUrl: string): Promise<ToolRun> {
+  const label = 'Fetched post';
   const id = extractTweetId(idOrUrl);
-  if (!id) return `Couldn't parse a tweet id from "${idOrUrl}".`;
-
-  const res = await fetchDetail(id);
-  if (!res.ok) {
-    return "Couldn't fetch that tweet. If this keeps happening, open any tweet on X once to refresh.";
+  if (!id) {
+    const note = `Couldn't parse a tweet id from "${idOrUrl}".`;
+    return { content: note, card: { kind: 'x', label, tweets: [], note } };
   }
+  const res = await fetchDetail(id);
   const conv = getConversation(id);
-  if (!conv?.main) return `Couldn't read tweet ${id}.`;
-
-  const parts = [`Post:\n${formatTweet(conv.main)}`];
+  if (!res.ok || !conv?.main) {
+    const note = "Couldn't fetch that tweet. Open any tweet on X once to refresh.";
+    return { content: note, card: { kind: 'x', label, tweets: [], note } };
+  }
   const replies = [...conv.replies.values()].slice(0, 10);
-  if (replies.length) parts.push(`\nTop replies:\n${formatTweets(replies)}`);
-  return parts.join('\n');
+  const content = [`Post:\n${formatTweet(conv.main)}`];
+  if (replies.length) content.push(`\nTop replies:\n${formatTweets(replies)}`);
+  return {
+    content: content.join('\n'),
+    card: { kind: 'x', label, tweets: [conv.main, ...replies].map(toToolTweet) },
+  };
 }
 
 function extractTweetId(s: string): string | null {

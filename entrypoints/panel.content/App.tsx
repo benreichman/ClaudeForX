@@ -10,8 +10,36 @@ import type {
   ChatMessage,
   RunRequest,
   StreamMessage,
+  ToolCard,
+  WebSource,
 } from '@/utils/types';
+import {
+  deleteSession,
+  listSessions,
+  newSessionId,
+  saveSession,
+  titleFromTurns,
+  type ChatSession,
+  type StoredTurn,
+} from '@/utils/sessions';
 import { LOGO_SVG } from './logo';
+import {
+  ICON_CLOCK,
+  ICON_CLOSE,
+  ICON_MINUS,
+  ICON_PLUS,
+  ICON_SETTINGS,
+  ICON_TRASH,
+} from './icons';
+import { SourcesStrip, ToolCardView } from './ToolCards';
+
+function relativeTime(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 
 type Port = ReturnType<typeof browser.runtime.connect>;
 
@@ -53,6 +81,10 @@ interface Turn extends ChatMessage {
   display: string;
   /** Images attached to this turn (only the first user turn carries them). */
   images?: ApiImageBlock[];
+  /** Tool-call cards (web/X) rendered inline on an assistant turn. */
+  tools?: ToolCard[];
+  /** Cited web sources shown as a strip under an assistant turn. */
+  sources?: WebSource[];
 }
 
 export default function App() {
@@ -69,6 +101,8 @@ export default function App() {
   // the launcher is present on every X page (always-on mode).
   const [open, setOpen] = useState(false);
   const [launcherBottom, setLauncherBottom] = useState(20);
+  const [showHistory, setShowHistory] = useState(false);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
 
   // No `request` = general (no-tweet) chat mode.
   const general = request === null;
@@ -78,6 +112,41 @@ export default function App() {
   actionRef.current = action;
   const bodyRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Session bookkeeping (refs so async stream callbacks see live values).
+  const turnsRef = useRef<Turn[]>([]);
+  turnsRef.current = turns;
+  const sessionIdRef = useRef<string | null>(null);
+  const sessionCreatedRef = useRef<number>(0);
+  const sessionModeRef = useRef<'tweet' | 'general'>('general');
+
+  function beginSession(mode: 'tweet' | 'general'): void {
+    sessionIdRef.current = newSessionId();
+    sessionCreatedRef.current = Date.now();
+    sessionModeRef.current = mode;
+  }
+
+  function persistCurrent(): void {
+    const live = turnsRef.current.filter(
+      (t) => t.content || (t.tools && t.tools.length),
+    );
+    if (!live.length || !sessionIdRef.current) return;
+    const storedTurns: StoredTurn[] = live.map((t) => ({
+      role: t.role,
+      content: t.content,
+      display: t.display,
+      tools: t.tools,
+      sources: t.sources,
+    }));
+    void saveSession({
+      id: sessionIdRef.current,
+      title: titleFromTurns(storedTurns),
+      mode: sessionModeRef.current,
+      createdAt: sessionCreatedRef.current || Date.now(),
+      updatedAt: Date.now(),
+      turns: storedTurns,
+    });
+  }
 
   // Disconnecting a port whose extension context was invalidated (after a
   // reload) throws — swallow it so callers like close() always proceed.
@@ -122,26 +191,51 @@ export default function App() {
       setError('Extension was updated — refresh this tab to use Claude again.');
       return;
     }
+    // Patch the trailing assistant turn (where streamed content/cards land).
+    const patchLast = (fn: (t: Turn) => Turn) =>
+      setTurns((prev) => {
+        if (!prev.length) return prev;
+        const next = [...prev];
+        next[next.length - 1] = fn(next[next.length - 1]);
+        return next;
+      });
+
     portRef.current = port;
     port.onMessage.addListener((raw: unknown) => {
       const m = raw as StreamMessage;
       if (m.type === 'delta') {
         setStatus('');
-        setTurns((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          next[next.length - 1] = {
-            ...last,
-            content: last.content + m.text,
-            display: last.display + m.text,
-          };
-          return next;
-        });
+        patchLast((last) => ({
+          ...last,
+          content: last.content + m.text,
+          display: last.display + m.text,
+        }));
       } else if (m.type === 'status') {
         setStatus(m.text);
+      } else if (m.type === 'web-search-start') {
+        patchLast((last) => ({
+          ...last,
+          tools: [...(last.tools ?? []), { kind: 'web', query: m.query, running: true, results: [] }],
+        }));
+      } else if (m.type === 'web-search-results') {
+        patchLast((last) => {
+          const tools = [...(last.tools ?? [])];
+          // Update the most recent still-running web card.
+          for (let i = tools.length - 1; i >= 0; i--) {
+            const c = tools[i];
+            if (c.kind === 'web' && c.running) {
+              tools[i] = { ...c, running: false, results: m.results };
+              break;
+            }
+          }
+          return { ...last, tools };
+        });
+      } else if (m.type === 'web-sources') {
+        patchLast((last) => ({ ...last, sources: m.sources }));
       } else if (m.type === 'tool-exec') {
         // The worker is asking us to run a client tool (X session access).
-        void executeTool(m.name, m.input).then((content) => {
+        void executeTool(m.name, m.input).then(({ content, card }) => {
+          patchLast((last) => ({ ...last, tools: [...(last.tools ?? []), card] }));
           try {
             port.postMessage({ type: 'tool-result', id: m.id, content });
           } catch {
@@ -152,6 +246,7 @@ export default function App() {
         setStatus('');
         setBusy(false);
         portRef.current = null;
+        persistCurrent();
         inputRef.current?.focus();
       } else if (m.type === 'error') {
         setStatus('');
@@ -174,6 +269,7 @@ export default function App() {
   const startRun = useCallback(
     async (act: ActionId, req: OpenRequest) => {
       disconnectPort();
+      beginSession('tweet');
       setTurns([]);
       setError(null);
       setNotice(null);
@@ -216,13 +312,63 @@ export default function App() {
   // Fully reset to a general, empty chat and minimize.
   const close = () => {
     disconnectPort();
+    persistCurrent();
     setRequest(null);
     setTurns([]);
     setNotice(null);
     setMeta('');
     setError(null);
     setBusy(false);
+    setShowHistory(false);
+    sessionIdRef.current = null;
     setOpen(false);
+  };
+
+  const newChat = () => {
+    disconnectPort();
+    persistCurrent();
+    sessionIdRef.current = null;
+    setRequest(null);
+    setTurns([]);
+    setNotice(null);
+    setMeta('');
+    setError(null);
+    setBusy(false);
+    setShowHistory(false);
+  };
+
+  const openHistory = async () => {
+    persistCurrent();
+    setSessions(await listSessions());
+    setShowHistory(true);
+  };
+
+  const openSession = (s: ChatSession) => {
+    disconnectPort();
+    persistCurrent();
+    sessionIdRef.current = s.id;
+    sessionCreatedRef.current = s.createdAt;
+    sessionModeRef.current = s.mode;
+    setRequest(null);
+    setTurns(
+      s.turns.map((t) => ({
+        role: t.role,
+        content: t.content,
+        display: t.display,
+        tools: t.tools,
+        sources: t.sources,
+      })),
+    );
+    setNotice(null);
+    setMeta('');
+    setError(null);
+    setBusy(false);
+    setShowHistory(false);
+  };
+
+  const removeSession = async (id: string) => {
+    await deleteSession(id);
+    setSessions(await listSessions());
   };
 
   const openOptions = () => {
@@ -242,15 +388,16 @@ export default function App() {
   const sendText = (raw: string) => {
     const text = raw.trim();
     if (!text || busy) return;
+    if (!sessionIdRef.current) beginSession(general ? 'general' : 'tweet');
     setInput('');
     // Drop any empty assistant turn left behind by an errored run.
     const history = turns.filter((t) => !(t.role === 'assistant' && !t.content));
-    stream(action, [...history, { role: 'user', content: text, display: text }], request ? 'tweet' : 'general');
+    stream(action, [...history, { role: 'user', content: text, display: text }], sessionModeRef.current);
   };
 
   const retry = () => {
     const history = turns.filter((t) => !(t.role === 'assistant' && !t.content));
-    if (history.length) stream(action, history, request ? 'tweet' : 'general');
+    if (history.length) stream(action, history, sessionModeRef.current);
     else if (request) void startRun(action, request);
   };
 
@@ -302,17 +449,74 @@ export default function App() {
                 </span>
               </div>
             )}
-            <button className="cgx-iconbtn" title="Settings" onClick={openOptions}>
-              ⚙
-            </button>
-            <button className="cgx-iconbtn" title="Minimize" onClick={() => setOpen(false)}>
-              –
-            </button>
-            <button className="cgx-iconbtn" title="Close" onClick={close}>
-              ✕
-            </button>
+            <button
+              className="cgx-iconbtn"
+              title="New chat"
+              onClick={newChat}
+              dangerouslySetInnerHTML={{ __html: ICON_PLUS }}
+            />
+            <button
+              className="cgx-iconbtn"
+              title="History"
+              onClick={() => void openHistory()}
+              dangerouslySetInnerHTML={{ __html: ICON_CLOCK }}
+            />
+            <button
+              className="cgx-iconbtn"
+              title="Settings"
+              onClick={openOptions}
+              dangerouslySetInnerHTML={{ __html: ICON_SETTINGS }}
+            />
+            <button
+              className="cgx-iconbtn"
+              title="Minimize"
+              onClick={() => setOpen(false)}
+              dangerouslySetInnerHTML={{ __html: ICON_MINUS }}
+            />
+            <button
+              className="cgx-iconbtn"
+              title="Close"
+              onClick={close}
+              dangerouslySetInnerHTML={{ __html: ICON_CLOSE }}
+            />
           </div>
         </header>
+
+        {showHistory && (
+          <div className="cgx-history">
+            <div className="cgx-history-head">
+              <span>Chat history</span>
+              <button
+                className="cgx-iconbtn"
+                title="Back"
+                onClick={() => setShowHistory(false)}
+                dangerouslySetInnerHTML={{ __html: ICON_CLOSE }}
+              />
+            </div>
+            <div className="cgx-history-list">
+              {sessions.length === 0 && (
+                <div className="cgx-history-empty">No saved chats yet.</div>
+              )}
+              {sessions.map((s) => (
+                <div key={s.id} className="cgx-history-row">
+                  <button className="cgx-history-open" onClick={() => openSession(s)}>
+                    <span className="cgx-history-title">
+                      {s.mode === 'tweet' ? '𝕏 ' : ''}
+                      {s.title}
+                    </span>
+                    <span className="cgx-history-time">{relativeTime(s.updatedAt)}</span>
+                  </button>
+                  <button
+                    className="cgx-iconbtn"
+                    title="Delete"
+                    onClick={() => void removeSession(s.id)}
+                    dangerouslySetInnerHTML={{ __html: ICON_TRASH }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="cgx-body" ref={bodyRef}>
           {general && turns.length === 0 && !busy && !error && (
@@ -343,10 +547,12 @@ export default function App() {
               </div>
             ) : (
               <div key={i} className="cgx-output">
+                {t.tools?.map((card, ci) => <ToolCardView key={ci} card={card} />)}
                 <span dangerouslySetInnerHTML={{ __html: renderMarkdown(t.display) }} />
                 {lastIsStreamingAssistant && i === turns.length - 1 && (
                   <span className="cgx-cursor" />
                 )}
+                {t.sources && t.sources.length > 0 && <SourcesStrip sources={t.sources} />}
               </div>
             ),
           )}
