@@ -5,3 +5,6 @@ stats.html
 stats-*.json
 .env
 .DS_Store
+
+# Local scratchpad — not for the repo
+FEATURE_IDEAS.md

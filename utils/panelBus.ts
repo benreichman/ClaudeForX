@@ -1,10 +1,9 @@
 // Tiny bus connecting the injected page buttons (plain DOM code) to the React
 // panel living in the shadow root.
 
-export interface OpenRequest {
-  tweetId: string;
-  article: HTMLElement | null;
-}
+export type OpenRequest =
+  | { kind: 'tweet'; tweetId: string; article: HTMLElement | null }
+  | { kind: 'profile'; handle: string };
 
 type Listener = (req: OpenRequest) => void;
 

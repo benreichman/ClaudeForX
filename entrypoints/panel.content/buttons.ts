@@ -1,20 +1,23 @@
-// Injects a Claude button into every tweet's action bar, right next to the
-// Grok button when one exists. Lives in the page DOM (not the shadow root),
-// so its styles go into document.head.
+// Injects a Claude button next to X's Grok button — on every tweet (top-right,
+// beside Grok or the "⋯" menu) and on profile pages (in the header, for a
+// "who is this?" read). Lives in the page DOM, so its styles go to document.head.
 
 import { tweetIdFromArticle } from '@/utils/domScraper';
 import { panelBus } from '@/utils/panelBus';
 import { LOGO_SVG } from './logo';
 
 const BTN_CLASS = 'cgx-btn';
+const PROFILE_BTN_CLASS = 'cgx-profile-btn';
 
 const PAGE_STYLES = `
 .${BTN_CLASS} {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  align-self: center;
+  vertical-align: middle;
+  width: 32px;
+  height: 32px;
   margin: 0 2px;
   padding: 0;
   border: none;
@@ -25,13 +28,26 @@ const PAGE_STYLES = `
   transition: color 0.15s ease, background-color 0.15s ease;
 }
 .${BTN_CLASS}:hover {
-  color: #d97757;
-  background-color: rgba(217, 119, 87, 0.12);
+  color: #ff3e00;
+  background-color: rgba(255, 62, 0, 0.12);
 }
 `;
 
 interface InvalidationCtx {
   onInvalidated(cb: () => void): void;
+}
+
+// Path segments that are X features, not usernames.
+const RESERVED = new Set([
+  'home', 'explore', 'notifications', 'messages', 'search', 'settings', 'i',
+  'compose', 'bookmarks', 'jobs', 'lists', 'communities', 'premium', 'tos',
+  'privacy', 'about', 'login', 'logout', 'signup', 'hashtag',
+]);
+
+function profileHandle(): string | null {
+  const seg = location.pathname.split('/').filter(Boolean);
+  if (seg.length !== 1) return null; // /handle only (not /handle/status/... etc.)
+  return RESERVED.has(seg[0].toLowerCase()) ? null : seg[0];
 }
 
 export function injectButtons(ctx: InvalidationCtx): void {
@@ -46,6 +62,7 @@ export function injectButtons(ctx: InvalidationCtx): void {
     setTimeout(() => {
       scheduled = false;
       scan();
+      scanProfile();
     }, 300);
   };
 
@@ -56,6 +73,7 @@ export function injectButtons(ctx: InvalidationCtx): void {
     style.remove();
   });
   scan();
+  scanProfile();
 }
 
 function scan(): void {
@@ -63,34 +81,80 @@ function scan(): void {
     const article = el as HTMLElement;
     if (article.querySelector(`.${BTN_CLASS}`)) return;
 
+    // Always anchor to the top-right cluster (beside Grok, else the ⋯ menu) so
+    // placement is consistent — never the bottom action bar.
     const grokBtn = article.querySelector('button[aria-label*="Grok" i]');
-    const group = article.querySelector('div[role="group"]');
-    if (!grokBtn && !group) return;
-
-    const btn = makeButton(article);
+    const btn = makeTweetButton(article);
     if (grokBtn) {
-      // Action-bar buttons sit inside per-button cells — insert after Grok's cell.
-      const cell = (grokBtn.closest('div[role="group"] > div') ?? grokBtn) as HTMLElement;
-      cell.insertAdjacentElement('afterend', btn);
-    } else if (group) {
-      group.appendChild(btn);
+      grokBtn.insertAdjacentElement('afterend', btn);
+      return;
     }
+    const caret = article.querySelector('button[data-testid="caret"]');
+    if (caret) {
+      caret.insertAdjacentElement('beforebegin', btn);
+      return;
+    }
+    btn.remove(); // no suitable anchor on this article
   });
 }
 
-function makeButton(article: HTMLElement): HTMLButtonElement {
+// On a profile page, drop a Claude button into the sticky TOP BAR, next to the
+// Grok + search icons (top-right of the primary column).
+function scanProfile(): void {
+  const handle = profileHandle();
+  if (!handle) return;
+  const pc = document.querySelector('[data-testid="primaryColumn"]');
+  if (!pc) return;
+
+  // The sticky header's right cluster holds the "Profile Summary" (Grok) icon
+  // and the search icon, pinned to the very top. Anchor to the first of them
+  // (leftmost) and sit just to its left.
+  let anchor: Element | null = null;
+  for (const el of pc.querySelectorAll('button[aria-label]')) {
+    const label = (el.getAttribute('aria-label') ?? '').toLowerCase();
+    if (!/profile summary|grok|search/.test(label)) continue;
+    const r = el.getBoundingClientRect();
+    if (r.top > 0 && r.top < 120 && r.right > window.innerWidth * 0.4) {
+      anchor = el;
+      break; // first in DOM order = leftmost (Profile Summary)
+    }
+  }
+  if (!anchor) return;
+
+  const host = anchor.parentElement;
+  if (!host || host.querySelector(`.${PROFILE_BTN_CLASS}`)) return;
+  anchor.insertAdjacentElement('beforebegin', makeProfileButton());
+}
+
+function baseButton(title: string): HTMLButtonElement {
   const btn = document.createElement('button');
-  btn.className = BTN_CLASS;
   btn.type = 'button';
-  btn.title = 'Ask Claude';
-  btn.setAttribute('aria-label', 'Ask Claude about this post');
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
   btn.innerHTML = LOGO_SVG;
+  return btn;
+}
+
+function makeTweetButton(article: HTMLElement): HTMLButtonElement {
+  const btn = baseButton('Ask Claude about this post');
+  btn.className = BTN_CLASS;
   btn.addEventListener('click', (e) => {
-    // Keep X from treating this as a click on the tweet.
     e.preventDefault();
     e.stopPropagation();
     const tweetId = tweetIdFromArticle(article);
-    if (tweetId) panelBus.open({ tweetId, article });
+    if (tweetId) panelBus.open({ kind: 'tweet', tweetId, article });
+  });
+  return btn;
+}
+
+function makeProfileButton(): HTMLButtonElement {
+  const btn = baseButton('Ask Claude about this profile');
+  btn.className = `${BTN_CLASS} ${PROFILE_BTN_CLASS}`;
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const handle = profileHandle();
+    if (handle) panelBus.open({ kind: 'profile', handle });
   });
   return btn;
 }

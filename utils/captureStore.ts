@@ -10,7 +10,7 @@ import type {
   PageMessage,
   TweetData,
 } from './types';
-import { focalIdFromUrl, ingestTweetDetail, parseTweetResult } from './xParser';
+import { collectTweets, focalIdFromUrl, ingestTweetDetail, parseTweetResult } from './xParser';
 
 export interface FetchResult {
   ok: boolean;
@@ -26,6 +26,8 @@ export interface OpResult {
 }
 
 const conversations = new Map<string, Conversation>();
+// Posts seen per author handle (from passively-captured UserTweets responses).
+const profilePosts = new Map<string, TweetData[]>();
 const pendingFetches = new Map<number, (r: FetchResult) => void>();
 const pendingOps = new Map<number, (r: OpResult) => void>();
 let fetchSeq = 0;
@@ -131,7 +133,22 @@ function ingestCapture(op: string, url: string, json: unknown): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const t = parseTweetResult((json as any)?.data?.tweetResult?.result);
     if (t?.id) getOrCreate(t.id).main = t;
+  } else if (op === 'UserTweets') {
+    // Accumulate the author's posts so profile summaries get the full set X
+    // loaded (and more as the user scrolls), keyed by handle.
+    for (const t of collectTweets(json, 80)) {
+      if (!t.handle || !t.id) continue;
+      const key = t.handle.toLowerCase();
+      const arr = profilePosts.get(key) ?? [];
+      if (!arr.some((x) => x.id === t.id)) arr.push(t);
+      profilePosts.set(key, arr);
+    }
   }
+}
+
+/** Posts captured for a given handle (from the user's profile browsing). */
+export function getProfilePosts(handle: string): TweetData[] {
+  return profilePosts.get(handle.toLowerCase()) ?? [];
 }
 
 export function getConversation(tweetId: string): Conversation | undefined {

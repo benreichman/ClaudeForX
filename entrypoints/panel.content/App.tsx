@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { gatherContext } from '@/utils/contextBuilder';
+import { gatherContext, gatherProfileContext } from '@/utils/contextBuilder';
 import { renderMarkdown } from '@/utils/markdown';
 import { panelBus, type OpenRequest } from '@/utils/panelBus';
 import { ACTIONS } from '@/utils/prompts';
@@ -351,9 +351,31 @@ export default function App() {
     port.postMessage(runMsg);
   }, [disconnectPort]);
 
+  /** Start a fresh "who is this?" conversation for a profile. */
+  const startProfileRun = useCallback(
+    (handle: string) => {
+      disconnectPort();
+      beginSession('general');
+      setTurns([]);
+      setError(null);
+      setNotice(null);
+      setBusy(true);
+      setStatus('Reading the profile…');
+      const ctx = gatherProfileContext(handle);
+      setMeta(`@${handle} · profile`);
+      const first: Turn = {
+        role: 'user',
+        content: `Give me a quick read on the X user @${handle} — who they are, what they mostly post about, and their apparent stance or vibe — based on their bio and recent posts below. Keep it tight.\n\n${ctx}`,
+        display: `Who is @${handle}?`,
+      };
+      stream(actionRef.current, [first], 'general');
+    },
+    [stream, disconnectPort],
+  );
+
   /** Start a fresh conversation for a tweet with the given action. */
   const startRun = useCallback(
-    async (act: ActionId, req: OpenRequest) => {
+    async (act: ActionId, req: Extract<OpenRequest, { kind: 'tweet' }>) => {
       disconnectPort();
       beginSession('tweet');
       setTurns([]);
@@ -391,9 +413,10 @@ export default function App() {
     return panelBus.onOpen((req) => {
       setOpen(true);
       setRequest(req);
-      void startRun(actionRef.current, req);
+      if (req.kind === 'tweet') void startRun(actionRef.current, req);
+      else startProfileRun(req.handle);
     });
-  }, [startRun]);
+  }, [startRun, startProfileRun]);
 
   // Fully reset to a general, empty chat and minimize.
   const close = () => {
@@ -467,7 +490,7 @@ export default function App() {
 
   const onActionChange = (value: ActionId) => {
     setAction(value);
-    if (request) void startRun(value, request);
+    if (request?.kind === 'tweet') void startRun(value, request);
   };
 
   /** Append a user message and stream a reply (works in both modes). */
@@ -484,7 +507,7 @@ export default function App() {
   const retry = () => {
     const history = turns.filter((t) => !(t.role === 'assistant' && !t.content));
     if (history.length) stream(action, history, sessionModeRef.current);
-    else if (request) void startRun(action, request);
+    else if (request?.kind === 'tweet') void startRun(action, request);
   };
 
   // Abort the in-flight response, keeping whatever streamed so far.
@@ -617,7 +640,7 @@ export default function App() {
           </div>
         </header>
 
-        {!general && (
+        {request?.kind === 'tweet' && (
           <div className="cgx-actionbar">
             <div className="cgx-select-wrap">
               <select

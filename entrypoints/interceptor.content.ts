@@ -8,7 +8,8 @@
 import type { ContentMessage, GqlTemplate, PageMessage } from '@/utils/types';
 import { generateTransactionId } from '@/utils/xTransaction';
 
-const INTERESTING = /\/i\/api\/graphql\/[^/]+\/(TweetDetail|TweetResultByRestId)/;
+const INTERESTING =
+  /\/i\/api\/graphql\/[^/]+\/(TweetDetail|TweetResultByRestId|UserTweets)/;
 const GRAPHQL = /\/i\/api\/graphql\//;
 
 export default defineContentScript({
@@ -97,7 +98,7 @@ export default defineContentScript({
       bodyText: string,
     ): void {
       if (!INTERESTING.test(url)) return;
-      const op = url.includes('TweetDetail') ? 'TweetDetail' : 'TweetResultByRestId';
+      const op = url.match(/\/graphql\/[^/]+\/([^/?]+)/)?.[1] ?? '';
       if (op === 'TweetDetail' && headers?.authorization) {
         lastDetailReq = { url, headers };
       }

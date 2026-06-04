@@ -7,6 +7,7 @@ import {
   fetchDetail,
   findTweet,
   getConversation,
+  getProfilePosts,
 } from './captureStore';
 import { scrapeArticle, scrapeVisibleThread } from './domScraper';
 import { getSettings } from './settings';
@@ -110,6 +111,43 @@ async function gatherImages(main: TweetData): Promise<ApiImageBlock[]> {
     // Worker unreachable (context invalidated) — proceed text-only.
     return [];
   }
+}
+
+/** Scrape a profile page (bio + visible posts) for a "who is this?" read. */
+export function gatherProfileContext(handle: string): string {
+  const nameEl = document.querySelector('[data-testid="UserName"]') as HTMLElement | null;
+  const bioEl = document.querySelector('[data-testid="UserDescription"]') as HTMLElement | null;
+  const name = (nameEl?.innerText ?? `@${handle}`).split('\n').filter(Boolean).join(' ');
+  const bio = bioEl?.innerText?.trim() ?? '';
+
+  // Header items like location, join date, following/followers counts.
+  const headerItems = [...document.querySelectorAll('[data-testid="UserProfileHeader_Items"] *')]
+    .map((e) => (e as HTMLElement).innerText?.trim())
+    .filter(Boolean);
+  const meta = [...new Set(headerItems)].slice(0, 6).join(' · ');
+
+  // Prefer passively-captured UserTweets posts (richer + more of them); fall
+  // back to DOM-scraped visible tweets. Dedupe by id, keep this user's posts.
+  const lc = handle.toLowerCase();
+  const byId = new Map<string, TweetData>();
+  for (const t of [...getProfilePosts(handle), ...scrapeVisibleThread()]) {
+    if (t.text && t.handle.toLowerCase() === lc && !byId.has(t.id)) byId.set(t.id, t);
+  }
+  const posts = [...byId.values()].slice(0, 40);
+
+  const parts = [`=== PROFILE ===`, name];
+  if (meta) parts.push(meta);
+  parts.push(bio ? `Bio: ${bio}` : '(no bio)');
+  if (posts.length) {
+    parts.push('', `=== RECENT POSTS (${posts.length}) ===`);
+    posts.forEach((t, i) => {
+      const eng = t.likes != null ? ` [${fmtNum(t.likes)} likes]` : '';
+      parts.push(`${i + 1}.${eng} ${t.text.replace(/\s+/g, ' ').slice(0, 400)}`);
+    });
+  } else {
+    parts.push('', '(No posts visible on the page — scroll the profile and try again.)');
+  }
+  return parts.join('\n');
 }
 
 function fmtNum(n: number | string | null): string {
