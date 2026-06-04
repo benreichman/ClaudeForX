@@ -12,11 +12,20 @@ export default function App() {
   const [pastedCode, setPastedCode] = useState('');
   const [verifier, setVerifier] = useState('');
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [primed, setPrimed] = useState({ tweets: false, search: false, profiles: false });
 
   useEffect(() => {
     void getSettings().then((s) => {
       setSettings(s);
       setLoaded(true);
+    });
+    void browser.storage.local.get('gqlTemplates').then((r) => {
+      const t = (r.gqlTemplates ?? {}) as Record<string, unknown>;
+      setPrimed({
+        tweets: !!t.TweetDetail,
+        search: !!t.SearchTimeline,
+        profiles: !!t.UserByScreenName && !!t.UserTweets,
+      });
     });
   }, []);
 
@@ -248,6 +257,24 @@ export default function App() {
             </p>
           </div>
         </label>
+
+        {settings.xTools && (
+          <div className="status">
+            <div className="status-head">Tool status</div>
+            {[
+              { label: 'Tweets & replies', on: primed.tweets, hint: 'open any tweet once' },
+              { label: 'Search X', on: primed.search, hint: 'search on X once' },
+              { label: 'User posts', on: primed.profiles, hint: 'visit a profile once' },
+            ].map((row) => (
+              <div className="status-row" key={row.label}>
+                <span>{row.label}</span>
+                <span className={row.on ? 'on' : 'off'}>
+                  {row.on ? '● armed' : `○ ${row.hint}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
     </main>
   );

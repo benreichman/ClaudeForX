@@ -3,7 +3,9 @@ import { gatherContext } from '@/utils/contextBuilder';
 import { renderMarkdown } from '@/utils/markdown';
 import { panelBus, type OpenRequest } from '@/utils/panelBus';
 import { ACTIONS } from '@/utils/prompts';
+import { getSettings, saveSettings } from '@/utils/settings';
 import { executeTool } from '@/utils/xTools';
+import { ModelPicker } from './ModelPicker';
 import type {
   ActionId,
   ApiImageBlock,
@@ -98,6 +100,8 @@ export default function App() {
   const [meta, setMeta] = useState('');
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState('');
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [model, setModel] = useState<string>('claude-sonnet-4-6');
   // Panel expanded vs. minimized to the launcher bubble. Closed by default, so
   // the launcher is present on every X page (always-on mode).
   const [open, setOpen] = useState(false);
@@ -106,6 +110,7 @@ export default function App() {
   const [launcherBottom, setLauncherBottom] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [selection, setSelection] = useState<{ text: string; x: number; y: number } | null>(null);
 
   // No `request` = general (no-tweet) chat mode.
   const general = request === null;
@@ -167,6 +172,51 @@ export default function App() {
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns, status]);
+
+  // Load the current model once (for the footer quick-switcher).
+  useEffect(() => {
+    void getSettings().then((s) => setModel(s.model));
+  }, []);
+
+  const onModelChange = (m: string) => {
+    setModel(m);
+    void saveSettings({ model: m });
+  };
+
+  // Show an "Ask Claude" popover when the user selects text anywhere on X.
+  // Driven by `selectionchange` (fires reliably on document) rather than mouseup,
+  // which X sometimes intercepts. Debounced so it settles after the drag ends.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const evaluate = () => {
+      const sel = window.getSelection();
+      const text = sel?.toString().trim() ?? '';
+      if (!sel || sel.rangeCount === 0 || text.length < 2 || text.length > 8000) {
+        setSelection(null);
+        return;
+      }
+      const rects = sel.getRangeAt(0).getClientRects();
+      const rect = rects[rects.length - 1] ?? sel.getRangeAt(0).getBoundingClientRect();
+      if (!rect || (!rect.width && !rect.height)) {
+        setSelection(null);
+        return;
+      }
+      setSelection({
+        text,
+        x: Math.min(Math.max(8, rect.right - 60), window.innerWidth - 150),
+        y: Math.min(rect.bottom + 8, window.innerHeight - 48),
+      });
+    };
+    const onSelChange = () => {
+      clearTimeout(timer);
+      timer = setTimeout(evaluate, 180);
+    };
+    document.addEventListener('selectionchange', onSelChange);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('selectionchange', onSelChange);
+    };
+  }, []);
 
   // While minimized, position the launcher above X's bottom-right Grok FAB.
   // That FAB renders + animates in after page load, so poll quickly and wait
@@ -437,25 +487,90 @@ export default function App() {
     else if (request) void startRun(action, request);
   };
 
+  // Abort the in-flight response, keeping whatever streamed so far.
+  const stopGenerating = () => {
+    disconnectPort();
+    setStatus('');
+    setBusy(false);
+    persistCurrent();
+  };
+
+  // Re-run the last user turn, replacing the last assistant response.
+  const regenerate = () => {
+    const lastUser = turns.map((t) => t.role).lastIndexOf('user');
+    if (lastUser < 0) return;
+    stream(action, turns.slice(0, lastUser + 1), sessionModeRef.current);
+  };
+
+  // Open a fresh general chat asking about the selected text.
+  const askSelection = () => {
+    if (!selection) return;
+    const text = selection.text.slice(0, 4000);
+    setSelection(null);
+    disconnectPort();
+    setRequest(null);
+    setTurns([]);
+    setError(null);
+    setNotice(null);
+    setMeta('');
+    sessionIdRef.current = null;
+    beginSession('general');
+    setOpen(true);
+    const short = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    stream(
+      action,
+      [
+        {
+          role: 'user',
+          content: `Explain this text I selected on X. Give context on what it means and why it matters:\n\n"""${text}"""`,
+          display: `Explain: "${short}"`,
+        },
+      ],
+      'general',
+    );
+  };
+
+  const copyMessage = (text: string, i: number) => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopiedIdx(i);
+      setTimeout(() => setCopiedIdx((c) => (c === i ? null : c)), 1500);
+    });
+  };
+
   const lastIsStreamingAssistant =
     busy &&
     !status &&
     turns.length > 0 &&
     turns[turns.length - 1].role === 'assistant';
 
-  // Minimized: a floating launcher bubble — hidden until we've positioned it
-  // above X's Grok FAB, so it never flashes at the default corner first.
+  // Minimized: a floating launcher bubble (hidden until positioned above X's
+  // Grok FAB) plus the select-to-ask popover when text is highlighted.
   if (!open) {
-    if (launcherBottom == null) return null;
     return (
       <div className="cgx-root">
-        <button
-          className={`cgx-launcher${busy ? ' busy' : ''}`}
-          style={{ bottom: `${launcherBottom}px` }}
-          title="Ask Claude"
-          onClick={() => setOpen(true)}
-          dangerouslySetInnerHTML={{ __html: LOGO_SVG }}
-        />
+        {launcherBottom != null && (
+          <button
+            className={`cgx-launcher${busy ? ' busy' : ''}`}
+            style={{ bottom: `${launcherBottom}px` }}
+            title="Ask Claude"
+            onClick={() => setOpen(true)}
+            dangerouslySetInnerHTML={{ __html: LOGO_SVG }}
+          />
+        )}
+        {selection && (
+          <button
+            className="cgx-sel-pop"
+            style={{ left: `${selection.x}px`, top: `${selection.y}px` }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={askSelection}
+          >
+            <span
+              className="cgx-sel-logo"
+              dangerouslySetInnerHTML={{ __html: LOGO_SVG }}
+            />
+            Ask Claude
+          </button>
+        )}
       </div>
     );
   }
@@ -594,6 +709,16 @@ export default function App() {
                   <span className="cgx-cursor" />
                 )}
                 {t.sources && t.sources.length > 0 && <SourcesStrip sources={t.sources} />}
+                {t.content && !(busy && i === turns.length - 1) && (
+                  <div className="cgx-msg-actions">
+                    <button onClick={() => copyMessage(t.display, i)}>
+                      {copiedIdx === i ? 'Copied' : 'Copy'}
+                    </button>
+                    {i === turns.length - 1 && !busy && (
+                      <button onClick={regenerate}>Regenerate</button>
+                    )}
+                  </div>
+                )}
               </div>
             ),
           )}
@@ -619,7 +744,10 @@ export default function App() {
         </div>
 
         <footer className="cgx-footer">
-          {meta && <div className="cgx-meta">{meta}</div>}
+          <div className="cgx-footmeta">
+            <ModelPicker value={model} onChange={onModelChange} />
+            {meta && <span className="cgx-meta">{meta}</span>}
+          </div>
           <form
             className="cgx-inputrow"
             onSubmit={(e) => {
@@ -641,14 +769,25 @@ export default function App() {
               disabled={busy}
               onChange={(e) => setInput(e.target.value)}
             />
-            <button
-              type="submit"
-              className="cgx-send"
-              disabled={busy || !input.trim()}
-              title="Send"
-            >
-              ↑
-            </button>
+            {busy ? (
+              <button
+                type="button"
+                className="cgx-send cgx-stop"
+                title="Stop"
+                onClick={stopGenerating}
+              >
+                <span className="cgx-stop-sq" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="cgx-send"
+                disabled={!input.trim()}
+                title="Send"
+              >
+                ↑
+              </button>
+            )}
           </form>
         </footer>
       </div>

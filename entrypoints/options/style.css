@@ -208,3 +208,46 @@ button.linklike {
   margin: 0 0 10px;
   font-size: 14px;
 }
+
+.status {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--boxbg);
+  padding: 6px 14px;
+}
+
+.status-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+  padding: 8px 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 0;
+  font-size: 13.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.status-row:last-child {
+  border-bottom: none;
+}
+
+.status-row .on {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #2ecc71;
+}
+
+.status-row .off {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
