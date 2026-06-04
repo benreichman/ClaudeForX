@@ -157,6 +157,14 @@ export interface WebSource {
   title: string;
 }
 
+/** Token usage for a response, summed across any tool-loop turns. */
+export interface UsageInfo {
+  inputTokens: number;
+  outputTokens: number;
+  /** Server-side web searches performed (Anthropic web_search) — billed per request. */
+  webSearches?: number;
+}
+
 /** A tweet shown inside an X tool card. */
 export interface ToolTweet {
   handle: string;
@@ -177,6 +185,7 @@ export type StreamMessage =
   | { type: 'web-search-start'; query: string }
   | { type: 'web-search-results'; query: string; results: WebSource[] }
   | { type: 'web-sources'; sources: WebSource[] }
+  | { type: 'usage'; usage: UsageInfo }
   | { type: 'done' }
   | { type: 'error'; message: string };
 

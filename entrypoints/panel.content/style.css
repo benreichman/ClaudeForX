@@ -449,6 +449,27 @@
 }
 
 /* per-message actions (copy / regenerate) */
+/* per-response token/cost readout (exact counts from the API) */
+.cgx-usage {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+/* running session total, in the footer meta row (pinned to the right) */
+.cgx-usage-total {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 .cgx-msg-actions {
   display: flex;
   gap: 6px;

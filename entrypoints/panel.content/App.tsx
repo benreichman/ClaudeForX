@@ -3,6 +3,7 @@ import { gatherContext, gatherProfileContext } from '@/utils/contextBuilder';
 import { renderMarkdown } from '@/utils/markdown';
 import { panelBus, type OpenRequest } from '@/utils/panelBus';
 import { ACTIONS } from '@/utils/prompts';
+import { estimateCost, formatCost, formatTokens, priceFor } from '@/utils/pricing';
 import { MODELS, getSettings, saveSettings } from '@/utils/settings';
 import { executeTool } from '@/utils/xTools';
 import { ModelPicker, type ModelOption } from './ModelPicker';
@@ -13,6 +14,7 @@ import type {
   RunRequest,
   StreamMessage,
   ToolCard,
+  UsageInfo,
   WebSource,
 } from '@/utils/types';
 import {
@@ -34,6 +36,13 @@ import {
   ICON_TRASH,
 } from './icons';
 import { SourcesStrip, ToolCardView } from './ToolCards';
+
+/** "2.3k in · 410 out" — plus "· ≈$0.01" when we have a price for the model. */
+function usageLabel(u: UsageInfo, price: ReturnType<typeof priceFor>): string {
+  const base = `${formatTokens(u.inputTokens)} in · ${formatTokens(u.outputTokens)} out`;
+  const cost = estimateCost(u, price);
+  return cost != null ? `${base} · ≈${formatCost(cost)}` : base;
+}
 
 function relativeTime(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -88,6 +97,8 @@ interface Turn extends ChatMessage {
   tools?: ToolCard[];
   /** Cited web sources shown as a strip under an assistant turn. */
   sources?: WebSource[];
+  /** Exact token usage for this response, as reported by the API. */
+  usage?: UsageInfo;
 }
 
 export default function App() {
@@ -102,6 +113,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [provider, setProvider] = useState<'anthropic' | 'openai'>('anthropic');
+  const [authMode, setAuthMode] = useState<'oauth' | 'apikey'>('oauth');
   const [model, setModel] = useState<string>('claude-sonnet-4-6');
   const [openaiModel, setOpenaiModel] = useState<string>('');
   const [openaiModels, setOpenaiModels] = useState<string[]>([]);
@@ -148,6 +160,7 @@ export default function App() {
       display: t.display,
       tools: t.tools,
       sources: t.sources,
+      usage: t.usage,
     }));
     void saveSession({
       id: sessionIdRef.current,
@@ -180,6 +193,7 @@ export default function App() {
   useEffect(() => {
     void getSettings().then((s) => {
       setProvider(s.provider);
+      setAuthMode(s.authMode);
       setModel(s.model);
       setOpenaiModel(s.openai?.model ?? '');
       setOpenaiModels(s.openai?.models ?? []);
@@ -198,6 +212,24 @@ export default function App() {
           desc: m.label.split('—')[1]?.trim(),
         }));
   const modelValue = provider === 'openai' ? openaiModel : model;
+
+  // Cost is only shown on pay-per-token paths (Anthropic API key, or any
+  // OpenAI-compatible endpoint) and only for models we have a published rate
+  // for. Subscription (OAuth) and unknown models show exact tokens, no dollars.
+  const metered = provider === 'openai' || authMode === 'apikey';
+  const price = metered ? priceFor(modelValue) : null;
+  const sessionUsage = turns.reduce<UsageInfo>(
+    (acc, t) =>
+      t.usage
+        ? {
+            inputTokens: acc.inputTokens + t.usage.inputTokens,
+            outputTokens: acc.outputTokens + t.usage.outputTokens,
+            webSearches: (acc.webSearches ?? 0) + (t.usage.webSearches ?? 0),
+          }
+        : acc,
+    { inputTokens: 0, outputTokens: 0, webSearches: 0 },
+  );
+  const sessionHasUsage = sessionUsage.inputTokens > 0 || sessionUsage.outputTokens > 0;
 
   const onModelChange = async (id: string) => {
     if (provider === 'openai') {
@@ -345,6 +377,8 @@ export default function App() {
         });
       } else if (m.type === 'web-sources') {
         patchLast((last) => ({ ...last, sources: m.sources }));
+      } else if (m.type === 'usage') {
+        patchLast((last) => ({ ...last, usage: m.usage }));
       } else if (m.type === 'tool-exec') {
         // The worker is asking us to run a client tool (X session access).
         void executeTool(m.name, m.input).then(({ content, card }) => {
@@ -493,6 +527,7 @@ export default function App() {
         display: t.display,
         tools: t.tools,
         sources: t.sources,
+        usage: t.usage,
       })),
     );
     setNotice(null);
@@ -759,6 +794,11 @@ export default function App() {
                   <span className="cgx-cursor" />
                 )}
                 {t.sources && t.sources.length > 0 && <SourcesStrip sources={t.sources} />}
+                {t.usage && (t.usage.inputTokens > 0 || t.usage.outputTokens > 0) && (
+                  <div className="cgx-usage" title="Exact token count reported by the API">
+                    {usageLabel(t.usage, price)}
+                  </div>
+                )}
                 {t.content && !(busy && i === turns.length - 1) && (
                   <div className="cgx-msg-actions">
                     <button onClick={() => copyMessage(t.display, i)}>
@@ -797,6 +837,15 @@ export default function App() {
           <div className="cgx-footmeta">
             <ModelPicker options={modelOptions} value={modelValue} onChange={onModelChange} />
             {meta && <span className="cgx-meta">{meta}</span>}
+            {sessionHasUsage && (
+              <span
+                className="cgx-usage-total"
+                title="Total tokens this session (exact, from the API)"
+              >
+                Σ {formatTokens(sessionUsage.inputTokens + sessionUsage.outputTokens)} tok
+                {price ? ` · ≈${formatCost(estimateCost(sessionUsage, price)!)}` : ''}
+              </span>
+            )}
           </div>
           <form
             className="cgx-inputrow"

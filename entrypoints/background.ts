@@ -20,6 +20,7 @@ import type {
   RunRequest,
   Settings,
   StreamMessage,
+  UsageInfo,
   WebSource,
 } from '@/utils/types';
 
@@ -175,6 +176,7 @@ async function runAnthropic(
   const messages: ChatMessage[] = [...msg.messages];
   let toolBudget = MAX_TOOL_CALLS;
   const citations: WebSource[] = [];
+  const usage: UsageInfo = { inputTokens: 0, outputTokens: 0, webSearches: 0 };
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const body: Record<string, unknown> = {
@@ -186,7 +188,11 @@ async function runAnthropic(
     };
     if (tools.length) body.tools = tools;
 
-    const { stopReason, blocks } = await streamOnce(settings, body, signal, port, citations);
+    const { stopReason, blocks, usage: turnUsage } = await streamOnce(settings, body, signal, port, citations);
+    // Each tool-loop turn is a separately-billed call — sum them.
+    usage.inputTokens += turnUsage.inputTokens;
+    usage.outputTokens += turnUsage.outputTokens;
+    usage.webSearches = (usage.webSearches ?? 0) + (turnUsage.webSearches ?? 0);
 
     // Only OUR client tools require a follow-up turn; web_search is server-side.
     const toolUses = blocks.filter(
@@ -216,6 +222,7 @@ async function runAnthropic(
     const deduped = citations.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true)));
     send(port, { type: 'web-sources', sources: deduped });
   }
+  if (usage.inputTokens || usage.outputTokens) send(port, { type: 'usage', usage });
   send(port, { type: 'done' });
 }
 
@@ -263,9 +270,12 @@ async function runOpenAI(
   const messages = toOpenAIMessages(systemText, msg.messages);
   const webCitations: WebSource[] = [];
   let toolBudget = MAX_TOOL_CALLS;
+  const usage: UsageInfo = { inputTokens: 0, outputTokens: 0 };
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const { text, toolCalls } = await streamOpenAITurn(settings, messages, tools, signal, port);
+    const { text, toolCalls, usage: turnUsage } = await streamOpenAITurn(settings, messages, tools, signal, port);
+    usage.inputTokens += turnUsage.inputTokens;
+    usage.outputTokens += turnUsage.outputTokens;
     if (!toolCalls.length) break;
 
     // Assistant message that requested the tools (must echo tool_calls).
@@ -311,6 +321,7 @@ async function runOpenAI(
       sources: webCitations.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true))),
     });
   }
+  if (usage.inputTokens || usage.outputTokens) send(port, { type: 'usage', usage });
   send(port, { type: 'done' });
 }
 
@@ -353,7 +364,7 @@ async function streamOpenAITurn(
   tools: unknown[] | undefined,
   signal: AbortSignal,
   port: Port,
-): Promise<{ text: string; toolCalls: OpenAIToolCall[] }> {
+): Promise<{ text: string; toolCalls: OpenAIToolCall[]; usage: UsageInfo }> {
   const cfg = settings.openai;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (cfg.apiKey) headers.authorization = `Bearer ${cfg.apiKey}`;
@@ -408,6 +419,7 @@ async function streamOpenAITurn(
   let text = '';
   let reasoning = '';
   let finishReason: string | null = null;
+  const usage: UsageInfo = { inputTokens: 0, outputTokens: 0 };
   const annotations: WebSource[] = []; // OpenRouter url_citation results
   // Accumulate streamed tool calls by index (id/name arrive once, args in chunks).
   const calls: Record<number, { id: string; name: string; args: string }> = {};
@@ -430,6 +442,12 @@ async function streamOpenAITurn(
         ev = JSON.parse(data);
       } catch {
         continue;
+      }
+      // The usage chunk (from stream_options.include_usage) arrives on its own
+      // with an empty choices array — capture it before the choice guard below.
+      if (ev.usage) {
+        usage.inputTokens = ev.usage.prompt_tokens ?? usage.inputTokens;
+        usage.outputTokens = ev.usage.completion_tokens ?? usage.outputTokens;
       }
       const choice = ev.choices?.[0];
       if (!choice) continue;
@@ -495,7 +513,7 @@ async function streamOpenAITurn(
     text = fallback;
   }
 
-  return { text, toolCalls };
+  return { text, toolCalls, usage };
 }
 
 function toolStatus(name: string, input: unknown): string {
@@ -597,6 +615,7 @@ function humanizeApiError(status: number, body: string): string {
 interface StreamResult {
   stopReason: string | null;
   blocks: ContentBlock[];
+  usage: UsageInfo;
 }
 
 /**
@@ -630,6 +649,9 @@ async function streamOnce(
   const toolJson: Record<number, string> = {};
   let stopReason: string | null = null;
   let lastWebQuery = '';
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let webSearches = 0;
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -652,6 +674,19 @@ async function streamOnce(
       }
 
       switch (ev.type) {
+        case 'message_start': {
+          // Initial input count. NOTE: this does NOT include content that
+          // server-side tools (web_search) inject mid-response — that only
+          // shows up in the final message_delta usage below.
+          const u = (ev.message as { usage?: Record<string, number> } | undefined)?.usage;
+          if (u) {
+            inputTokens =
+              (u.input_tokens ?? 0) +
+              (u.cache_read_input_tokens ?? 0) +
+              (u.cache_creation_input_tokens ?? 0);
+          }
+          break;
+        }
         case 'content_block_start': {
           const i = ev.index ?? 0;
           const block = { ...(ev.content_block as Record<string, unknown>) } as ContentBlock;
@@ -705,6 +740,28 @@ async function streamOnce(
         case 'message_delta': {
           const d = ev.delta as { stop_reason?: string } | undefined;
           if (d?.stop_reason) stopReason = d.stop_reason;
+          // The FINAL usage lands here. For server-side tools (web_search) this
+          // input_tokens is the true total — it includes the search results
+          // Anthropic injected, which message_start didn't count. Prefer it.
+          const u = ev.usage as
+            | {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_read_input_tokens?: number;
+                cache_creation_input_tokens?: number;
+                server_tool_use?: { web_search_requests?: number };
+              }
+            | undefined;
+          if (u?.input_tokens != null) {
+            inputTokens =
+              u.input_tokens +
+              (u.cache_read_input_tokens ?? 0) +
+              (u.cache_creation_input_tokens ?? 0);
+          }
+          if (u?.output_tokens != null) outputTokens = u.output_tokens;
+          if (u?.server_tool_use?.web_search_requests != null) {
+            webSearches = u.server_tool_use.web_search_requests;
+          }
           break;
         }
         case 'error': {
@@ -719,7 +776,7 @@ async function streamOnce(
     .map(Number)
     .sort((a, b) => a - b)
     .map((i) => blocks[i]);
-  return { stopReason, blocks: ordered };
+  return { stopReason, blocks: ordered, usage: { inputTokens, outputTokens, webSearches } };
 }
 
 /** Pull {url,title} out of a web_search_tool_result block's content array. */

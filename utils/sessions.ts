@@ -2,7 +2,7 @@
 // stripped before saving (they're large base64 and only needed live); tool
 // cards + sources are small and kept so history renders faithfully.
 
-import type { ToolCard, WebSource } from './types';
+import type { ToolCard, UsageInfo, WebSource } from './types';
 
 export interface StoredTurn {
   role: 'user' | 'assistant';
@@ -10,6 +10,7 @@ export interface StoredTurn {
   display: string;
   tools?: ToolCard[];
   sources?: WebSource[];
+  usage?: UsageInfo;
 }
 
 export interface ChatSession {
