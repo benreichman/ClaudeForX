@@ -145,7 +145,7 @@ export async function gatherProfileContext(
   for (const t of [...getProfilePosts(handle), ...scrapeVisibleThread()]) {
     if (t.text && t.handle.toLowerCase() === lc && !byId.has(t.id)) byId.set(t.id, t);
   }
-  const posts = [...byId.values()].slice(0, 40);
+  const posts = [...byId.values()].slice(0, 60);
 
   const parts = [`=== PROFILE ===`, name];
   if (meta) parts.push(meta);

@@ -365,7 +365,7 @@ export default function App() {
       setMeta(`@${handle} · profile`);
       const first: Turn = {
         role: 'user',
-        content: `Give me a quick read on the X user @${handle} — who they are, what they mostly post about, and their apparent stance or vibe — based on their bio and recent posts below. Keep it tight.\n\n${ctx}`,
+        content: `Below is @${handle}'s X profile — their bio and a sample of their most recent posts, fetched live from X just now for this question (the user did not paste them). Based on it, give me a quick read on who they are, what they mostly post about, and their apparent stance/vibe. These posts are current, so there's no need to fetch more. Keep it tight.\n\n${ctx}`,
         display: `Who is @${handle}?`,
       };
       stream(actionRef.current, [first], 'general');
