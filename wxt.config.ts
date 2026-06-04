@@ -5,7 +5,7 @@ export default defineConfig({
   manifest: {
     name: 'Claude for X',
     description:
-      'Ask Claude about any post on X — explain, summarize, fact-check. Like Grok, but Claude.',
+      'Grok-style AI sidebar for X — explain, summarize, fact-check posts. Claude by default, or any OpenAI-compatible model.',
     permissions: ['storage'],
     host_permissions: [
       'https://api.anthropic.com/*',

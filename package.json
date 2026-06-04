@@ -1,6 +1,6 @@
 {
   "name": "claude-for-x",
-  "description": "Ask Claude about any post on X — explain, summarize, fact-check. Like Grok, but Claude.",
+  "description": "Grok-style AI sidebar for X — explain, summarize, fact-check posts. Claude by default, or any OpenAI-compatible model.",
   "private": true,
   "version": "0.1.0",
   "type": "module",

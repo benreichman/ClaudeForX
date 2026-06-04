@@ -1,6 +1,8 @@
 # Claude for X
 
-Like Grok, but Claude. A Chrome extension (Manifest V3) that puts Claude on X/Twitter: a button on every post to explain / summarize / fact-check it, **and** an always-on launcher for a general Claude chat — with web search, image understanding, and (optionally) the ability to search X itself using your live session.
+**Claude (or any model) for X.** A Chrome extension (Manifest V3) that puts a Grok-style AI sidebar on X/Twitter: a button on every post to explain / summarize / fact-check it, **and** an always-on launcher for a general chat — with web search, image understanding, and (optionally) the ability to search X itself using your live session.
+
+Claude is the default and recommended backend (via your subscription or an API key), but you can also point it at **any OpenAI-compatible endpoint** — OpenRouter, Groq, OpenAI, a local llama.cpp/Ollama server, and others — and pick a model from that backend.
 
 > ⚠️ **Personal, unofficial project.** It uses undocumented internals of X and (optionally) the Claude Code OAuth flow. Read the [Disclaimer](#disclaimer) and [risks](#honest-caveats--risks) before using or distributing it.
 
@@ -24,7 +26,8 @@ Like Grok, but Claude. A Chrome extension (Manifest V3) that puts Claude on X/Tw
   - Context includes the main post, its quoted post, engagement stats, **its images** (sent to Claude's vision), and replies in X's relevance order — fetched even from the timeline.
   - **Follow-up chat** — keep asking; the post + replies stay in context.
 - **Always-on general chat** — a launcher bubble on every X page opens a standalone Claude chat (no specific post) with web search.
-- **Web search** — native Anthropic server-side search for current info, cited as inline links.
+- **Web search** — native Anthropic server-side search for current info, cited as inline links. On the OpenAI-compatible path, web search is pluggable (OpenRouter's built-in plugin, or a Tavily key) and renders with the same inline cards + sources.
+- **Bring your own model** — Claude by default, or point it at any **OpenAI-compatible endpoint** (OpenRouter, Groq, OpenAI, local llama.cpp/Ollama, …) and pick a model. Chat + vision + tool-calling, with a thinking-mode toggle for reasoning models.
 - **Search X (experimental, off by default)** — let Claude search posts, pull a user's tweets, and fetch a tweet, using your logged-in session. See risks below.
 - **Dark, Grok-style UI** — a floating bottom-right card that minimizes to a launcher bubble.
 
@@ -32,7 +35,7 @@ Like Grok, but Claude. A Chrome extension (Manifest V3) that puts Claude on X/Tw
 
 - **A MAIN-world content script** (`entrypoints/interceptor.content.ts`) patches `fetch`/XHR inside x.com to capture X's internal GraphQL responses, learn reusable request templates per operation, and **replay** them (with your session) to fetch conversations, search results, and user timelines on demand. Because it runs *as the page*, your existing X session is used automatically — **no Twitter login or API keys.**
 - **The panel content script** (`entrypoints/panel.content/`) injects the Claude button, renders the React panel in a Shadow DOM (so X's CSS and ours can't collide), executes the X tools, and falls back to scraping the rendered DOM when needed.
-- **The background worker** (`entrypoints/background.ts`) streams from the Anthropic API and runs the agentic tool loop. Host permissions exempt it from CORS — no proxy server anywhere. It also fetches/encodes post images for vision.
+- **The background worker** (`entrypoints/background.ts`) streams from the selected provider — the native Anthropic Messages API, or any OpenAI-compatible `/chat/completions` endpoint (`utils/openaiAdapter.ts` bridges the two formats) — and runs the agentic tool loop. Host permissions exempt it from CORS — no proxy server anywhere. It also fetches/encodes post images for vision.
 
 ## Setup
 

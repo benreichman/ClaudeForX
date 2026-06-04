@@ -120,7 +120,7 @@ export default function App() {
       <h1>
         <span className="coral">✳</span> Claude for X
       </h1>
-      <p className="subtitle">Ask Claude about any post on X — like Grok, but Claude.</p>
+      <p className="subtitle">Claude (or any model) for X — a Grok-style sidebar, but yours.</p>
 
       {notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
 
