@@ -16,11 +16,12 @@ export function ModelPicker({
   const ref = useRef<HTMLDivElement>(null);
   const current = MODELS.find((m) => m.id === value) ?? MODELS[0];
 
-  // Close on outside click.
+  // Close on outside click. Use composedPath() so clicks inside our shadow-DOM
+  // menu register as "inside" (e.target is retargeted to the shadow host).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: Event) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !e.composedPath().includes(ref.current)) setOpen(false);
     };
     document.addEventListener('mousedown', onDown, true);
     return () => document.removeEventListener('mousedown', onDown, true);
